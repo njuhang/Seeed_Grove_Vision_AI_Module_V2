@@ -62,6 +62,12 @@ def _bootstrap_litert_env() -> None:
     """
     import sys
 
+    # Force CPU-only runtime before any converter dependency imports TensorFlow
+    # or JAX. This avoids eager CUDA initialisation on hosts whose driver is
+    # present but not compatible with the runtime bundled in litert-torch.
+    os.environ.setdefault("CUDA_VISIBLE_DEVICES", "-1")
+    os.environ.setdefault("JAX_PLATFORMS", "cpu")
+
     if "triton" not in sys.modules:
         try:
             import triton  # noqa: F401

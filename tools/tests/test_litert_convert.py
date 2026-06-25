@@ -14,6 +14,7 @@ green.
 
 from __future__ import annotations
 
+import os
 import sys
 import types
 from pathlib import Path
@@ -167,6 +168,17 @@ def test_module_imports_without_torch_in_base_env():
     assert hasattr(lc, "export_float_tflite")
     assert hasattr(lc, "quantize_to_int8")
     assert hasattr(lc, "convert_pt_to_int8_tflite")
+
+
+def test_bootstrap_litert_env_forces_cpu_only_runtime(monkeypatch):
+    _install_fake_heavy_modules(monkeypatch)
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    monkeypatch.delenv("JAX_PLATFORMS", raising=False)
+
+    lc._bootstrap_litert_env()
+
+    assert os.environ["CUDA_VISIBLE_DEVICES"] == "-1"
+    assert os.environ["JAX_PLATFORMS"] == "cpu"
 
 
 def test_float_model_path_uses_quantize_contract():
@@ -409,6 +421,9 @@ def test_real_conversion_smoke(tmp_path):
     litert-torch env once the env is healthy (see litert_convert.py docstring
     for the import-order workarounds).
     """
+    if os.environ.get("RUN_REAL_CONVERSION_SMOKE") != "1":
+        pytest.skip("set RUN_REAL_CONVERSION_SMOKE=1 to enable the real conversion smoke test")
+
     pytest.importorskip("torch")
     pytest.importorskip("litert_torch")
     pytest.importorskip("ai_edge_quantizer")

@@ -37,10 +37,9 @@ Design (spec §7: offline, deterministic, reproducible)
   an explicit ``seed`` reproduces the same samples.
 * **Small.** Default ``num_samples`` is 32 -- a reasonable calibration set
   (16-32 per spec) that keeps the in-memory footprint tiny.
-* **Image keys only this phase.** ``coco_128`` (OD) and
-  ``imagenet_1k_random`` (classification) both produce ``[0,1]`` float32 NCHW
-  image tensors -- the layout the float tflite serving signature expects.
-  ``speech_commands`` (audio) is reserved for Phase 6 and intentionally raises.
+* ``coco_128`` (OD) and ``imagenet_1k_random`` (classification) both produce
+  ``[0,1]`` float32 image tensors. ``speech_commands`` produces deterministic
+  MFCC-like float32 feature tensors for KWS models.
 """
 
 from __future__ import annotations
@@ -52,9 +51,8 @@ import numpy as np
 # --------------------------------------------------------------------------- #
 # Public constants
 # --------------------------------------------------------------------------- #
-#: Image calibration keys supported in this phase. ``speech_commands`` (audio)
-#: is reserved for Phase 6 and deliberately NOT in this set.
-SUPPORTED_DATASETS: frozenset[str] = frozenset({"coco_128", "imagenet_1k_random"})
+#: Calibration keys supported by the current conversion flow.
+SUPPORTED_DATASETS: frozenset[str] = frozenset({"coco_128", "imagenet_1k_random", "speech_commands"})
 
 #: The default signature input argument name used when the caller does not pass
 #: one explicitly. Matches the name ai-edge-torch/litert-torch emit for the
@@ -85,18 +83,15 @@ def load_calibration_samples(
     """Yield representative calibration samples for int8 quantization.
 
     Each yielded item is a ``{input_name: np.ndarray}`` dict whose array is
-    ``float32``, shaped to ``input_shape``, with values in ``[0, 1]`` -- exactly
-    the form :func:`litert_convert.quantize_to_int8` consumes (litert_convert.py
-    L215, L225-228).
+    ``float32`` and shaped to ``input_shape`` -- exactly the form
+    :func:`litert_convert.quantize_to_int8` consumes (litert_convert.py L215,
+    L225-228).
 
     Args:
         calibration_dataset: Key declared under ``calibration_dataset`` in
-            ``configs/models.yaml``. This phase supports ``coco_128`` (object
-            detection) and ``imagenet_1k_random`` (classification). Both produce
-            the same NCHW float32 [0,1] image layout; the key distinguishes the
-            *intended* dataset for documentation/registry purposes (real
-            per-dataset statistics land in a later phase). ``speech_commands``
-            and any unknown key raise ``KeyError``.
+            ``configs/models.yaml``. ``coco_128`` and ``imagenet_1k_random``
+            produce image-like [0,1] tensors; ``speech_commands`` produces
+            MFCC-like feature tensors for audio/KWS calibration.
         input_shape: Shape of one model input sample, typically
             ``[N, C, H, W]`` (e.g. ``[1, 3, 192, 192]``). Arrays are produced at
             exactly this shape, so callers pass the float model's serving input
@@ -118,14 +113,13 @@ def load_calibration_samples(
 
     Raises:
         KeyError: If ``calibration_dataset`` is not in :data:`SUPPORTED_DATASETS`
-            (covers unknown keys and the not-yet-implemented ``speech_commands``
-            audio key reserved for Phase 6).
+            (covers unknown keys).
     """
     if calibration_dataset not in SUPPORTED_DATASETS:
         raise KeyError(
             f"unknown calibration_dataset {calibration_dataset!r}; "
             f"supported keys: {sorted(SUPPORTED_DATASETS)} "
-            "(speech_commands is reserved for Phase 6)"
+            ""
         )
 
     if num_samples is None:
@@ -145,15 +139,15 @@ def load_calibration_samples(
     rng = np.random.default_rng(effective_seed)
     shape = tuple(int(d) for d in input_shape)
 
-    # Both image keys produce NCHW float32 in [0,1] -- the layout the float
-    # tflite serving signature expects for these models. The key distinguishes
-    # the intended dataset for the registry; per-dataset image statistics are a
-    # later-phase concern and not needed for representative-range calibration.
     for _ in range(num_samples):
-        arr = rng.random(size=shape, dtype=np.float32)
-        # rng.random already covers [0,1); clip away the rare 1.0 boundary so
-        # the [0,1] guarantee in the contract is exact for tests.
-        np.clip(arr, 0.0, 1.0, out=arr)
+        if calibration_dataset == "speech_commands":
+            arr = rng.normal(loc=0.0, scale=1.0, size=shape).astype(np.float32)
+            np.clip(arr, -4.0, 4.0, out=arr)
+        else:
+            arr = rng.random(size=shape, dtype=np.float32)
+            # rng.random already covers [0,1); clip away the rare 1.0 boundary
+            # so the [0,1] guarantee for image keys is exact for tests.
+            np.clip(arr, 0.0, 1.0, out=arr)
         yield {input_name: arr}
 
 

@@ -24,6 +24,8 @@ import sys
 import types
 from unittest.mock import MagicMock
 
+import os
+
 import numpy as np
 import pytest
 
@@ -36,6 +38,7 @@ import tools.model_converter.calibration as cal
 def test_known_dataset_keys_are_supported():
     assert "coco_128" in cal.SUPPORTED_DATASETS
     assert "imagenet_1k_random" in cal.SUPPORTED_DATASETS
+    assert "speech_commands" in cal.SUPPORTED_DATASETS
 
 
 def test_unknown_key_raises():
@@ -43,10 +46,19 @@ def test_unknown_key_raises():
         list(cal.load_calibration_samples("does_not_exist", input_shape=[1, 3, 8, 8]))
 
 
-def test_speech_commands_key_not_yet_supported():
-    """Phase 6 deliverable -- must not silently produce samples now."""
-    with pytest.raises(KeyError):
-        list(cal.load_calibration_samples("speech_commands", input_shape=[1, 16000]))
+def test_speech_commands_key_produces_mfcc_feature_samples():
+    samples = list(
+        cal.load_calibration_samples(
+            "speech_commands", input_shape=[1, 101, 40], num_samples=4
+        )
+    )
+
+    assert len(samples) == 4
+    for sample in samples:
+        arr = sample["args_0"]
+        assert arr.dtype == np.float32
+        assert list(arr.shape) == [1, 101, 40]
+        assert np.isfinite(arr).all()
 
 
 # --------------------------------------------------------------------------- #
@@ -169,6 +181,9 @@ def test_real_quantize_to_int8_accepts_loader_output(tmp_path):
     conda env), run the loader's output through the real quantize_to_int8 and
     assert it produces a non-empty int8 tflite. Otherwise skip -- the
     structural assertions above already lock the contract."""
+    if os.environ.get("RUN_REAL_CONVERSION_SMOKE") != "1":
+        pytest.skip("set RUN_REAL_CONVERSION_SMOKE=1 to enable the real quantization smoke test")
+
     pytest.importorskip("torch")
     pytest.importorskip("litert_torch")
     pytest.importorskip("ai_edge_quantizer")

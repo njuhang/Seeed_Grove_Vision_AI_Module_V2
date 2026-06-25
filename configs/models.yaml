@@ -1,0 +1,330 @@
+﻿models:
+  - name: yolo11n_od_192
+    task: object_detection
+    source:
+      type: ultralytics
+      model: yolo11n.pt
+    input_shape: [1, 3, 192, 192]
+    calibration_dataset: coco_128
+    tier: 1
+    flash_address: 0x00400000
+    model_zoo_ref: yolo11n_full_integer_quant_192_241219_batch_matmul_vela.tflite
+
+  - name: yolov8n_od_192
+    task: object_detection
+    source:
+      type: ultralytics
+      model: yolov8n.pt
+    input_shape: [1, 3, 192, 192]
+    calibration_dataset: coco_128
+    tier: 1
+    flash_address: 0x00600000
+    model_zoo_ref: yolov8n_od_192_delete_transpose_0xB7B000.tflite
+
+  - name: mobilenetv2_cls_224
+    task: classification
+    source:
+      type: torchvision
+      model: mobilenet_v2
+      weights: MobileNet_V2_Weights.DEFAULT
+    input_shape: [1, 3, 224, 224]
+    calibration_dataset: imagenet_1k_random
+    tier: 1
+    flash_address: 0x00800000
+    model_zoo_ref: qat_pruning_model_vela.tflite
+
+  - name: mobilenetv3small_cls_224
+    task: classification
+    source:
+      type: torchvision
+      model: mobilenet_v3_small
+      weights: MobileNet_V3_Small_Weights.DEFAULT
+    input_shape: [1, 3, 224, 224]
+    calibration_dataset: imagenet_1k_random
+    tier: 1
+    flash_address: 0x00A00000
+    vela:
+      extra_args: ["--arena-cache-size", "0"]
+
+  - name: yolov5n_od_192
+    task: object_detection
+    source:
+      type: torch.hub
+      repo: ultralytics/yolov5
+      model: yolov5n
+      pretrained: true
+    input_shape: [1, 3, 192, 192]
+    calibration_dataset: coco_128
+    tier: 1
+    flash_address: 0x00C00000
+
+  - name: efficientnet_lite0_cls_224
+    task: classification
+    source:
+      type: timm
+      model: tf_efficientnet_lite0
+      pretrained: true
+    input_shape: [1, 3, 224, 224]
+    calibration_dataset: imagenet_1k_random
+    tier: 1
+    flash_address: 0x00E00000
+
+  - name: segformerb0_seg_512
+    task: semantic_segmentation
+    source:
+      type: huggingface
+      model_class: SegformerForSemanticSegmentation
+      repo: nvidia/segformer-b0-finetuned-ade-512-512
+      replace_gelu_with_relu: true
+    input_shape: [1, 3, 512, 512]
+    calibration_dataset: imagenet_1k_random
+    tier: 1
+    flash_address: 0x01000000
+    vela:
+      extra_args: ["--debug-force-legacy-core"]
+
+  - name: deeplabv3_mbnv3_seg_320
+    task: semantic_segmentation
+    source:
+      type: torchvision
+      model: deeplabv3_mobilenet_v3_large
+      weights: DeepLabV3_MobileNet_V3_Large_Weights.DEFAULT
+    input_shape: [1, 3, 320, 320]
+    calibration_dataset: imagenet_1k_random
+    tier: 1
+    flash_address: 0x01200000
+
+  - name: yolov8n_pose_192
+    task: keypoint_detection
+    source:
+      type: ultralytics
+      model: yolov8n-pose.pt
+    input_shape: [1, 3, 192, 192]
+    calibration_dataset: coco_128
+    tier: 1
+    flash_address: 0x01400000
+
+  - name: yolo11n_pose_192
+    task: keypoint_detection
+    source:
+      type: ultralytics
+      model: yolo11n-pose.pt
+    input_shape: [1, 3, 192, 192]
+    calibration_dataset: coco_128
+    tier: 1
+    flash_address: 0x01600000
+
+  - name: squeezenet11_cls_224
+    task: classification
+    source:
+      type: torchvision
+      model: squeezenet1_1
+      weights: SqueezeNet1_1_Weights.DEFAULT
+    input_shape: [1, 3, 224, 224]
+    calibration_dataset: imagenet_1k_random
+    tier: 1
+    flash_address: 0x01800000
+
+  - name: lraspp_mbnv3_seg_320
+    task: semantic_segmentation
+    source:
+      type: torchvision
+      model: lraspp_mobilenet_v3_large
+      weights: LRASPP_MobileNet_V3_Large_Weights.DEFAULT
+    input_shape: [1, 3, 320, 320]
+    calibration_dataset: imagenet_1k_random
+    tier: 1
+    flash_address: 0x01A00000
+    vela:
+      extra_args: ["--arena-cache-size", "0"]
+
+  - name: lraspp_mbnv3_seg_192
+    task: semantic_segmentation
+    source:
+      type: torchvision
+      model: lraspp_mobilenet_v3_large
+      weights: LRASPP_MobileNet_V3_Large_Weights.DEFAULT
+    input_shape: [1, 3, 192, 192]
+    calibration_dataset: imagenet_1k_random
+    tier: 1
+    flash_address: 0x03200000
+    vela:
+      extra_args: ["--arena-cache-size", "0"]
+
+  - name: yolo11s_od_192
+    task: object_detection
+    source:
+      type: ultralytics
+      model: yolo11s.pt
+    input_shape: [1, 3, 192, 192]
+    calibration_dataset: coco_128
+    tier: 2
+    flash_address: 0x03400000
+
+  - name: yolo_fastestv2_od_192
+    task: object_detection
+    source:
+      type: yolo_fastestv2
+      repo: dog-qiuqiu/Yolo-FastestV2
+      repo_path: artifacts_debug/vendor/yolo-fastestv2/dog-qiuqiu-Yolo-FastestV2-4984427
+      weights: modelzoo/coco2017-epoch-0.235624ap-model.pth
+      data: data/coco.data
+      note: lightweight candidate replacing YOLO medium for Himax scope
+    input_shape: [1, 3, 192, 192]
+    calibration_dataset: coco_128
+    tier: 2
+    flash_address: 0x03600000
+
+  - name: scrfd_500m_face_det_240x320
+    task: face_detection
+    source:
+      type: prebuilt_tflite
+      path: artifacts_debug/vendor/face_recognition/pinto_scrfd/extracted/saved_model_scrfd_500m_bnkps_240x320/model_dynamic_range_quant.tflite
+      origin: scrfd_2stage_face_recognition
+      pipeline_id: face_recognition_2stage_scrfd_mobilefacenet
+      pipeline_stage: 1
+      stage_role: face_detection
+      input_layout: NHWC
+      static_int8: true
+      note: stage-1 detector for 2-stage face recognition benchmark
+    input_shape: [1, 3, 240, 320]
+    calibration_dataset: coco_128
+    tier: 3
+    flash_address: 0x03800000
+
+  - name: mobilefacenet_face_embed_112
+    task: face_embedding
+    source:
+      type: prebuilt_tflite
+      path: artifacts_debug/vendor/face_recognition/mobilefacenet/mobilefacenet.tflite
+      origin: mobilefacenet_2stage_face_recognition
+      pipeline_id: face_recognition_2stage_scrfd_mobilefacenet
+      pipeline_stage: 2
+      stage_role: face_embedding
+      input_layout: NHWC
+      static_int8: true
+      rewrite_int8_conv_biases: true
+      note: stage-2 embedding model for 2-stage face recognition benchmark
+    input_shape: [1, 3, 112, 112]
+    calibration_dataset: imagenet_1k_random
+    tier: 3
+    flash_address: 0x03A00000
+
+  - name: ssdlite_mbnv3_od_320
+    task: object_detection
+    source:
+      type: torchvision
+      model: ssdlite320_mobilenet_v3_large
+      weights: SSDLite320_MobileNet_V3_Large_Weights.DEFAULT
+    input_shape: [1, 3, 320, 320]
+    calibration_dataset: coco_128
+    tier: 1
+    flash_address: 0x01C00000
+    vela:
+      extra_args: ["--arena-cache-size", "0"]
+
+  - name: efficientnet_lite1_cls_240
+    task: classification
+    source:
+      type: timm
+      model: tf_efficientnet_lite1
+      pretrained: true
+    input_shape: [1, 3, 240, 240]
+    calibration_dataset: imagenet_1k_random
+    tier: 1
+    flash_address: 0x01E00000
+
+  - name: ultraface_rfb320_face_320x240
+    task: face_detection
+    source:
+      type: ultraface
+      variant: RFB
+      input_size: 320
+      repo_path: artifacts_debug/vendor/ultraface
+      weights: models/pretrained/version-RFB-320.pth
+    input_shape: [1, 3, 240, 320]
+    calibration_dataset: coco_128
+    tier: 1
+    flash_address: 0x02000000
+
+  - name: blazeface_front_face_128
+    task: face_detection
+    source:
+      type: blazeface
+      model: front
+      repo_path: artifacts_debug/vendor/blazeface
+      weights: blazeface.pth
+    input_shape: [1, 3, 128, 128]
+    calibration_dataset: coco_128
+    tier: 1
+    flash_address: 0x02200000
+
+  - name: retinaface_mnet_face_160
+    task: face_detection
+    source:
+      type: retinaface
+      backbone: mobile0.25
+      repo_path: artifacts_debug/vendor/retinaface
+      weights: weights/mobilenet0.25_Final.pth
+    input_shape: [1, 3, 160, 160]
+    calibration_dataset: coco_128
+    tier: 1
+    flash_address: 0x02400000
+
+  - name: movenet_lightning_pose_192
+    task: keypoint_detection
+    source:
+      type: movenet
+      repo_path: artifacts_debug/vendor/movenet.pytorch
+      weights: output/e118_valacc0.79805.pth
+      model_file: lib/models/movenet_mobilenetv2.py
+      num_classes: 17
+    input_shape: [1, 3, 192, 192]
+    calibration_dataset: coco_128
+    tier: 1
+    flash_address: 0x02600000
+
+  - name: honk_res8_narrow_kws_101x40
+    task: keyword_spotting
+    source:
+      type: honk
+      architecture: res8-narrow
+      repo_path: artifacts_debug/vendor/honk
+      weights: ../honk-models/res8_narrow.pt
+      n_labels: 12
+    input_shape: [1, 101, 40]
+    calibration_dataset: speech_commands
+    tier: 1
+    flash_address: 0x02800000
+
+  - name: mediapipe_hand_detector_192
+    task: hand_detection
+    source:
+      type: prebuilt_tflite
+      path: artifacts_debug/vendor/mediapipe/hand_landmarker_extracted/hand_detector.tflite
+      origin: mediapipe_hand_landmarker_task
+      input_layout: NHWC
+      dequantize_float16_constants: true
+      static_int8: true
+      quantize_prelu_float_islands: true
+    input_shape: [1, 3, 192, 192]
+    calibration_dataset: coco_128
+    tier: 1
+    flash_address: 0x02A00000
+
+  - name: mediapipe_hand_landmarks_224
+    task: hand_landmark
+    source:
+      type: prebuilt_tflite
+      path: artifacts_debug/vendor/mediapipe/hand_landmarker_extracted/hand_landmarks_detector.tflite
+      origin: mediapipe_hand_landmarker_task
+      input_layout: NHWC
+      dequantize_float16_constants: true
+    input_shape: [1, 3, 224, 224]
+    calibration_dataset: coco_128
+    tier: 1
+    flash_address: 0x03000000
+
+
+
+

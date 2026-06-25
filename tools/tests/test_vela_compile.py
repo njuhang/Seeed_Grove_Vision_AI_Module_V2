@@ -1,6 +1,15 @@
 from pathlib import Path
 from unittest.mock import Mock, patch
+import subprocess
 
+from tools.model_converter.vela_compile import build_vela_command
+from tools.model_converter.vela_compile import compile_with_vela
+from tools.model_converter.vela_compile import default_accelerator_config
+from tools.model_converter.vela_compile import default_vela_config_path
+from tools.model_converter.vela_compile import default_vela_executable
+from tools.model_converter.vela_compile import default_vela_memory_mode
+from tools.model_converter.vela_compile import default_vela_system_config
+from tools.model_converter.vela_compile import main as vela_compile_main
 from tools.model_converter.vela_compile import parse_vela_output
 from tools.model_converter.vela_compile import windows_path_to_wsl
 
@@ -195,10 +204,241 @@ NPU operators = 17 (63.0%)
 
 def test_windows_path_to_wsl_uses_bash_bridge() -> None:
     completed = Mock(stdout="/mnt/d/example/model.tflite\n")
-    with patch("tools.model_converter.vela_compile.subprocess.run", return_value=completed) as run_mock:
+    with (
+        patch.dict(
+            "tools.model_converter.vela_compile.os.environ",
+            {"WSL_DISTRO_NAME": "", "WSL_INTEROP": ""},
+            clear=False,
+        ),
+        patch("tools.model_converter.vela_compile.subprocess.run", return_value=completed) as run_mock,
+    ):
         result = windows_path_to_wsl(Path("D:/example/model.tflite"))
 
     assert result == "/mnt/d/example/model.tflite"
     command = run_mock.call_args.args[0]
     assert command[:3] == ["wsl", "bash", "-lc"]
     assert "wslpath -a" in command[3]
+
+
+def test_windows_path_to_wsl_returns_native_path_inside_wsl() -> None:
+    with patch.dict(
+        "tools.model_converter.vela_compile.os.environ",
+        {"WSL_DISTRO_NAME": "Ubuntu-22.04"},
+        clear=False,
+    ):
+        result = windows_path_to_wsl("/tmp/example/model.tflite")
+
+    assert result == str(Path("/tmp/example/model.tflite").resolve())
+
+
+def test_build_vela_command_uses_native_invocation_inside_wsl() -> None:
+    with (
+        patch.dict(
+            "tools.model_converter.vela_compile.os.environ",
+            {"WSL_DISTRO_NAME": "Ubuntu-22.04"},
+            clear=False,
+        ),
+        patch("tools.model_converter.vela_compile.default_vela_config_path", return_value="/repo/configs/himax_vela.ini"),
+        patch("tools.model_converter.vela_compile.default_vela_system_config", return_value="My_Sys_Cfg"),
+        patch("tools.model_converter.vela_compile.default_vela_memory_mode", return_value="My_Mem_Mode_Parent"),
+    ):
+        command = build_vela_command(
+            model_path="/tmp/example/model.tflite",
+            output_dir="/tmp/example/out",
+            vela_executable="/home/hang22/.local/bin/vela",
+        )
+
+    assert command == [
+        "/home/hang22/.local/bin/vela",
+        str(Path("/tmp/example/model.tflite").resolve()),
+        "--output-dir",
+        str(Path("/tmp/example/out").resolve()),
+        "--accelerator-config",
+        "ethos-u55-64",
+        "--show-cpu-operations",
+        "--config",
+        str(Path("/repo/configs/himax_vela.ini").resolve()),
+        "--system-config",
+        "My_Sys_Cfg",
+        "--memory-mode",
+        "My_Mem_Mode_Parent",
+    ]
+
+
+def test_build_vela_command_supports_python_runner_and_optimise_override() -> None:
+    with (
+        patch.dict(
+            "tools.model_converter.vela_compile.os.environ",
+            {"WSL_DISTRO_NAME": "Ubuntu-22.04"},
+            clear=False,
+        ),
+        patch("tools.model_converter.vela_compile.default_vela_config_path", return_value="/repo/configs/himax_vela.ini"),
+        patch("tools.model_converter.vela_compile.default_vela_system_config", return_value="My_Sys_Cfg"),
+        patch("tools.model_converter.vela_compile.default_vela_memory_mode", return_value="My_Mem_Mode_Parent"),
+    ):
+        command = build_vela_command(
+            model_path="/tmp/example/model.tflite",
+            output_dir="/tmp/example/out",
+            vela_executable="python3",
+            vela_executable_args=["artifacts_debug/run_vela450.py"],
+            optimise="Size",
+        )
+
+    assert command == [
+        "python3",
+        str((Path("artifacts_debug") / "run_vela450.py").resolve()),
+        str(Path("/tmp/example/model.tflite").resolve()),
+        "--output-dir",
+        str(Path("/tmp/example/out").resolve()),
+        "--accelerator-config",
+        "ethos-u55-64",
+        "--show-cpu-operations",
+        "--config",
+        str(Path("/repo/configs/himax_vela.ini").resolve()),
+        "--system-config",
+        "My_Sys_Cfg",
+        "--memory-mode",
+        "My_Mem_Mode_Parent",
+        "--optimise",
+        "Size",
+    ]
+
+
+def test_vela_compile_cli_forwards_size_options(tmp_path: Path) -> None:
+    model_path = tmp_path / "model.tflite"
+    model_path.write_bytes(b"tfl3")
+
+    with (
+        patch(
+            "tools.model_converter.vela_compile.sys.argv",
+            [
+                "vela_compile.py",
+                str(model_path),
+                "--model-name",
+                "probe",
+                "--output-dir",
+                str(tmp_path / "vela"),
+                "--optimise",
+                "Size",
+                "--tensor-allocator",
+                "HillClimb",
+                "--extra-arg=--verbose-operators",
+            ],
+        ),
+        patch("tools.model_converter.vela_compile.write_vela_artifacts", return_value=tmp_path / "vela" / "probe.vela_info.json") as write_mock,
+    ):
+        assert vela_compile_main() == 0
+
+    kwargs = write_mock.call_args.kwargs
+    assert kwargs["optimise"] == "Size"
+    assert kwargs["tensor_allocator"] == "HillClimb"
+    assert kwargs["extra_args"] == ["--verbose-operators"]
+
+
+def test_default_accelerator_config_defaults_to_hx6538_target() -> None:
+    with patch.dict("tools.model_converter.vela_compile.os.environ", {}, clear=True):
+        assert default_accelerator_config() == "ethos-u55-64"
+
+
+def test_default_accelerator_config_honors_explicit_env_override() -> None:
+    with patch.dict(
+        "tools.model_converter.vela_compile.os.environ",
+        {"VELA_ACCELERATOR_CONFIG": "ethos-u55-128"},
+        clear=True,
+    ):
+        assert default_accelerator_config() == "ethos-u55-128"
+
+
+def test_default_vela_config_path_defaults_to_repo_himax_config() -> None:
+    with patch.dict("tools.model_converter.vela_compile.os.environ", {}, clear=True):
+        assert default_vela_config_path() == str(Path("configs/himax_vela.ini").resolve())
+
+
+def test_default_vela_config_path_honors_explicit_env_override() -> None:
+    with patch.dict(
+        "tools.model_converter.vela_compile.os.environ",
+        {"VELA_CONFIG": "/custom/himax_vela.ini"},
+        clear=True,
+    ):
+        assert default_vela_config_path() == "/custom/himax_vela.ini"
+
+
+def test_default_vela_system_and_memory_mode_follow_repo_himax_defaults() -> None:
+    with patch.dict("tools.model_converter.vela_compile.os.environ", {}, clear=True):
+        assert default_vela_system_config() == "My_Sys_Cfg"
+        assert default_vela_memory_mode() == "My_Mem_Mode_Parent"
+
+
+def test_default_vela_system_and_memory_mode_do_not_guess_for_custom_config_without_names() -> None:
+    with patch.dict(
+        "tools.model_converter.vela_compile.os.environ",
+        {"VELA_CONFIG": "/custom/board.ini"},
+        clear=True,
+    ):
+        assert default_vela_system_config() is None
+        assert default_vela_memory_mode() is None
+
+
+def test_default_vela_system_and_memory_mode_honor_explicit_env_override() -> None:
+    with patch.dict(
+        "tools.model_converter.vela_compile.os.environ",
+        {
+            "VELA_SYSTEM_CONFIG": "CustomSys",
+            "VELA_MEMORY_MODE": "CustomMem",
+        },
+        clear=True,
+    ):
+        assert default_vela_system_config() == "CustomSys"
+        assert default_vela_memory_mode() == "CustomMem"
+
+
+def test_default_vela_executable_prefers_miniforge_vela_env() -> None:
+    with (
+        patch.dict("tools.model_converter.vela_compile.os.environ", {}, clear=True),
+        patch("tools.model_converter.vela_compile.Path.home", return_value=Path("/home/tester")),
+        patch("tools.model_converter.vela_compile.Path.exists", autospec=True) as exists_mock,
+    ):
+        exists_mock.side_effect = lambda self: str(self).replace("\\", "/") == "/home/tester/miniforge3/envs/vela/bin/vela"
+        assert default_vela_executable().replace("\\", "/") == "/home/tester/miniforge3/envs/vela/bin/vela"
+
+
+def test_default_vela_executable_honors_explicit_env_override() -> None:
+    with patch.dict(
+        "tools.model_converter.vela_compile.os.environ",
+        {"VELA_EXECUTABLE": "/custom/vela"},
+        clear=True,
+    ):
+        assert default_vela_executable() == "/custom/vela"
+
+
+def test_compile_with_vela_surfaces_process_output_on_failure(tmp_path: Path) -> None:
+    error = subprocess.CalledProcessError(
+        returncode=1,
+        cmd=["vela", "model.tflite"],
+        output="stdout details",
+        stderr="stderr details",
+    )
+    with (
+        patch.dict(
+            "tools.model_converter.vela_compile.os.environ",
+            {"WSL_DISTRO_NAME": "Ubuntu-22.04"},
+            clear=False,
+        ),
+        patch(
+            "tools.model_converter.vela_compile.subprocess.run",
+            side_effect=error,
+        ),
+    ):
+        try:
+            compile_with_vela(
+                model_path=tmp_path / "model.tflite",
+                output_dir=tmp_path / "out",
+                vela_executable="/custom/vela",
+            )
+        except RuntimeError as exc:
+            message = str(exc)
+        else:
+            raise AssertionError("expected compile_with_vela to raise RuntimeError")
+
+    assert "stdout details" in message
+    assert "stderr details" in message
