@@ -1,4 +1,5 @@
 import json
+import subprocess
 from pathlib import Path
 
 from unittest.mock import patch
@@ -614,6 +615,155 @@ def test_run_execution_plan_passes_model_chunk_size_to_flashing(tmp_path: Path) 
         )
 
     assert flash_mock.call_args.kwargs["model_chunk_size"] == 0x10000
+
+
+def test_run_execution_plan_can_continue_after_flash_error(tmp_path: Path) -> None:
+    plan_path = tmp_path / "benchmark_plan.json"
+    plan_path.write_text(
+        json.dumps(
+            {
+                "batches": [
+                    {
+                        "batch_index": 0,
+                        "table_path": str(tmp_path / "model_table_batch_0.bin"),
+                        "models": [
+                            {
+                                "name": "deeplabv3_mbnv3_seg_320",
+                                "task": "segmentation",
+                                "model_path": "artifacts/deeplabv3_mbnv3_seg_320/deeplabv3_mbnv3_seg_320_vela.tflite",
+                                "flash_address": "0x400000",
+                                "model_size_bytes": 36339088,
+                            }
+                        ],
+                    },
+                    {
+                        "batch_index": 1,
+                        "table_path": str(tmp_path / "model_table_batch_1.bin"),
+                        "models": [
+                            {
+                                "name": "yolov8n_pose_192",
+                                "task": "pose_estimation",
+                                "model_path": "artifacts/yolov8n_pose_192/yolov8n_pose_192_vela.tflite",
+                                "flash_address": "0x400000",
+                                "model_size_bytes": 3065648,
+                            }
+                        ],
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def flash_side_effect(*args, **kwargs):
+        models = kwargs["models"]
+        if models[0][0].endswith("deeplabv3_mbnv3_seg_320_vela.tflite"):
+            raise subprocess.CalledProcessError(returncode=1, cmd=["xmodem_send.py"], stderr="burn position overflow")
+        return None
+
+    with (
+        patch("tools.benchmark_runner.flash_model_batch", side_effect=flash_side_effect) as flash_mock,
+        patch(
+            "tools.benchmark_runner.capture_json_objects",
+            return_value=[
+                {
+                    "benchmark": {"device": "himax_hx6538", "firmware": "model_benchmark_v1", "timestamp": 2},
+                    "models": [{"name": "yolov8n_pose_192", "status": "ok"}],
+                }
+            ],
+        ) as capture_mock,
+    ):
+        board_result_path = run_execution_plan(
+            plan_path,
+            port="COM7",
+            output_dir=tmp_path,
+            continue_on_flash_error=True,
+        )
+
+    payload = json.loads(board_result_path.read_text(encoding="utf-8"))
+    assert payload["models"][0] == {
+        "name": "deeplabv3_mbnv3_seg_320",
+        "task": "segmentation",
+        "model_size_bytes": 36339088,
+        "status": "flash_failed",
+        "status_reason": "xmodem_send.py exited with status 1",
+    }
+    assert payload["models"][1]["name"] == "yolov8n_pose_192"
+    assert flash_mock.call_count == 2
+    assert capture_mock.call_count == 1
+
+
+def test_run_execution_plan_can_continue_after_capture_timeout(tmp_path: Path) -> None:
+    plan_path = tmp_path / "benchmark_plan.json"
+    plan_path.write_text(
+        json.dumps(
+            {
+                "batches": [
+                    {
+                        "batch_index": 0,
+                        "table_path": str(tmp_path / "model_table_batch_0.bin"),
+                        "models": [
+                            {
+                                "name": "yolov8n_pose_192",
+                                "task": "pose_estimation",
+                                "model_path": "artifacts/yolov8n_pose_192/yolov8n_pose_192_vela.tflite",
+                                "flash_address": "0x400000",
+                                "model_size_bytes": 3065648,
+                            }
+                        ],
+                    },
+                    {
+                        "batch_index": 1,
+                        "table_path": str(tmp_path / "model_table_batch_1.bin"),
+                        "models": [
+                            {
+                                "name": "yolo11n_pose_192",
+                                "task": "pose_estimation",
+                                "model_path": "artifacts/yolo11n_pose_192/yolo11n_pose_192_vela.tflite",
+                                "flash_address": "0x400000",
+                                "model_size_bytes": 2808400,
+                            }
+                        ],
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with (
+        patch("tools.benchmark_runner.flash_model_batch") as flash_mock,
+        patch(
+            "tools.benchmark_runner.capture_json_objects",
+            side_effect=[
+                TimeoutError("timed out waiting for benchmark JSON on COM7"),
+                [
+                    {
+                        "benchmark": {"device": "himax_hx6538", "firmware": "model_benchmark_v1", "timestamp": 2},
+                        "models": [{"name": "yolo11n_pose_192", "status": "ok"}],
+                    }
+                ],
+            ],
+        ) as capture_mock,
+    ):
+        board_result_path = run_execution_plan(
+            plan_path,
+            port="COM7",
+            output_dir=tmp_path,
+            continue_on_flash_error=True,
+        )
+
+    payload = json.loads(board_result_path.read_text(encoding="utf-8"))
+    assert payload["models"][0] == {
+        "name": "yolov8n_pose_192",
+        "task": "pose_estimation",
+        "model_size_bytes": 3065648,
+        "status": "benchmark_timeout",
+        "status_reason": "timed out waiting for benchmark JSON on COM7",
+    }
+    assert payload["models"][1]["name"] == "yolo11n_pose_192"
+    assert flash_mock.call_count == 2
+    assert capture_mock.call_count == 2
 
 
 def test_run_board_benchmark_can_flash_firmware_first(tmp_path: Path) -> None:

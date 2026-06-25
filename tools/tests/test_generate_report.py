@@ -93,6 +93,23 @@ def test_merge_result_row_preserves_board_status_reason() -> None:
     assert "AllocateTensors requested" in row["Reason"]
 
 
+def test_merge_result_row_handles_flash_failure_without_latency() -> None:
+    board_result = {
+        "name": "deeplabv3_mbnv3_seg_320",
+        "task": "segmentation",
+        "model_size_bytes": 36339088,
+        "status": "flash_failed",
+        "status_reason": "xmodem_send.py exited with status 1",
+    }
+
+    row = merge_result_row(board_result, {"npu_utilization_pct": 99.5, "cpu_fallback_ops": []})
+
+    assert row["Status"] == "flash_failed"
+    assert row["Arena (KB)"] == "-"
+    assert row["Avg (ms)"] == "-"
+    assert row["Reason"] == "xmodem_send.py exited with status 1"
+
+
 
 def test_load_payload_accepts_utf8_bom(tmp_path) -> None:
     payload_path = tmp_path / "benchmark_result.json"

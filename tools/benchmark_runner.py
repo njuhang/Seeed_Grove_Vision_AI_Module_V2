@@ -1,5 +1,6 @@
 import argparse
 import json
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -317,6 +318,7 @@ def run_execution_plan(
     flash_model_chunk_size: int | None = None,
     python_executable: str = "python",
     xmodem_script: str | Path = "xmodem/xmodem_send.py",
+    continue_on_flash_error: bool = False,
 ) -> Path:
     plan_path = Path(plan_path)
     output_dir = Path(output_dir)
@@ -326,26 +328,55 @@ def run_execution_plan(
     benchmark_meta: dict | None = None
     models_payload: list[dict] = []
 
+    def append_batch_failure(batch: dict, *, status: str, reason: str) -> None:
+        for model in batch["models"]:
+            models_payload.append(
+                {
+                    "name": model["name"],
+                    "task": model.get("task", "unknown"),
+                    "model_size_bytes": int(model.get("model_size_bytes", 0)),
+                    "status": status,
+                    "status_reason": reason,
+                }
+            )
+
     for batch in plan.get("batches", []):
-        flash_model_batch(
-            port=port,
-            table_path=batch["table_path"],
-            models=[
-                (model["model_path"], int(model["flash_address"], 0))
-                for model in batch["models"]
-            ],
-            baudrate=flash_baudrate,
-            auto_reset=auto_reset,
-            model_chunk_size=flash_model_chunk_size,
-            python_executable=python_executable,
-            xmodem_script=xmodem_script,
-        )
-        payloads = capture_json_objects(
-            port,
-            baudrate=flash_baudrate,
-            timeout=serial_timeout,
-            log_path=output_dir / f"serial_benchmark_capture_batch{batch['batch_index']}.log",
-        )
+        try:
+            flash_model_batch(
+                port=port,
+                table_path=batch["table_path"],
+                models=[
+                    (model["model_path"], int(model["flash_address"], 0))
+                    for model in batch["models"]
+                ],
+                baudrate=flash_baudrate,
+                auto_reset=auto_reset,
+                model_chunk_size=flash_model_chunk_size,
+                python_executable=python_executable,
+                xmodem_script=xmodem_script,
+            )
+        except subprocess.CalledProcessError as error:
+            if not continue_on_flash_error:
+                raise
+            cmd_name = Path(str(error.cmd[0])).name if isinstance(error.cmd, list) and error.cmd else "flash command"
+            append_batch_failure(
+                batch,
+                status="flash_failed",
+                reason=f"{cmd_name} exited with status {error.returncode}",
+            )
+            continue
+        try:
+            payloads = capture_json_objects(
+                port,
+                baudrate=flash_baudrate,
+                timeout=serial_timeout,
+                log_path=output_dir / f"serial_benchmark_capture_batch{batch['batch_index']}.log",
+            )
+        except TimeoutError as error:
+            if not continue_on_flash_error:
+                raise
+            append_batch_failure(batch, status="benchmark_timeout", reason=str(error))
+            continue
         latest_payload = payloads[-1]
         if benchmark_meta is None:
             benchmark_meta = latest_payload.get("benchmark", {})
@@ -373,6 +404,7 @@ def run_board_benchmark(
     flash_model_chunk_size: int | None = None,
     python_executable: str = "python",
     xmodem_script: str | Path = "xmodem/xmodem_send.py",
+    continue_on_flash_error: bool = False,
 ) -> Path:
     if flash_firmware_first:
         flash_firmware_image(
@@ -399,6 +431,7 @@ def run_board_benchmark(
         flash_model_chunk_size=flash_model_chunk_size,
         python_executable=python_executable,
         xmodem_script=xmodem_script,
+        continue_on_flash_error=continue_on_flash_error,
     )
 
 
@@ -425,6 +458,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--serial-timeout", type=float, default=60.0)
     parser.add_argument("--auto-reset", action="store_true")
     parser.add_argument("--flash-model-chunk-size")
+    parser.add_argument("--continue-on-flash-error", action="store_true")
     parser.add_argument("--python-executable", default="python")
     parser.add_argument("--xmodem-script", default="xmodem/xmodem_send.py")
     parser.add_argument("--vela-dir")
@@ -491,6 +525,7 @@ def main() -> int:
                 flash_model_chunk_size=int(args.flash_model_chunk_size, 0) if args.flash_model_chunk_size else None,
                 python_executable=args.python_executable,
                 xmodem_script=args.xmodem_script,
+                continue_on_flash_error=args.continue_on_flash_error,
             )
         )
         print(board_result_path)
