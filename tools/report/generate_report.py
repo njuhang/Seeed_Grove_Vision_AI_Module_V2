@@ -60,10 +60,15 @@ def _lookup_vela_info(
     conversion_by_name: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
     base_name, variant = _split_comparison_name(board_name)
+    conversion = conversion_by_name.get(base_name, {})
+    optimization = conversion.get("npu_optimization") or {}
+    if variant in {None, "ours"} and optimization.get("applied"):
+        optimized_summary = optimization.get("optimized_summary") or {}
+        if optimized_summary:
+            return optimized_summary
     if variant == "ours":
         return vela_infos.get(base_name, {})
     if variant == "model_zoo":
-        conversion = conversion_by_name.get(base_name, {})
         model_zoo_ref = conversion.get("model_zoo_ref")
         if model_zoo_ref:
             vela_info = vela_infos.get(Path(model_zoo_ref).stem, {})
@@ -118,6 +123,7 @@ def _build_comparison_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "Max (ms)": _delta_value(ours["Max (ms)"], model_zoo["Max (ms)"]),
                 "NPU%": _delta_value(ours["NPU%"], model_zoo["NPU%"]),
                 "CPU Fallback": fallback_diff,
+                "NPU Optimization": ours.get("NPU Optimization", "-"),
                 "Status": "comparison",
                 "Reason": "ours - model_zoo",
             }
@@ -158,6 +164,7 @@ def _build_size_trend_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "Max (ms)": _format_trend_value(ordered, "Max (ms)"),
                 "NPU%": _format_trend_value(ordered, "NPU%"),
                 "CPU Fallback": _format_trend_value(ordered, "CPU Fallback"),
+                "NPU Optimization": _format_trend_value(ordered, "NPU Optimization"),
                 "Status": "trend",
                 "Reason": "ordered by model size variant",
             }
@@ -169,12 +176,20 @@ def merge_result_row(
     board_result: dict[str, Any],
     vela_info: dict[str, Any],
     manifest_task: str | None = None,
+    conversion_result: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     task = board_result.get("task")
     if not task or task == "unknown":
         task = manifest_task or "unknown"
 
     fallback_ops = vela_info.get("cpu_fallback_ops", [])
+    optimization = (conversion_result or {}).get("npu_optimization") or {}
+    status = board_result["status"]
+    reason = board_result.get("status_reason") or "-"
+    if optimization.get("applied") and status != "ok":
+        status = "npu_opt_board_failed"
+        baseline_path = optimization.get("baseline_vela_path") or "-"
+        reason = f"{reason}; baseline fallback: {baseline_path}"
     return {
         "Model": board_result["name"],
         "Task": task,
@@ -185,8 +200,9 @@ def merge_result_row(
         "Max (ms)": board_result["latency_ms"]["max"],
         "NPU%": vela_info.get("npu_utilization_pct", "-"),
         "CPU Fallback": ",".join(fallback_ops) or "-",
-        "Status": board_result["status"],
-        "Reason": board_result.get("status_reason") or "-",
+        "NPU Optimization": _format_npu_optimization(optimization),
+        "Status": status,
+        "Reason": reason,
     }
 
 
@@ -213,9 +229,28 @@ def merge_failure_row(
         "Max (ms)": "-",
         "NPU%": "-",
         "CPU Fallback": "-",
+        "NPU Optimization": _format_npu_optimization(conversion_result.get("npu_optimization") or {}),
         "Status": conversion_result.get("status", "failed"),
         "Reason": reason,
     }
+
+
+def _format_npu_optimization(optimization: dict[str, Any]) -> str:
+    if not optimization:
+        return "-"
+    if not optimization.get("triggered") and not optimization.get("applied"):
+        return "-"
+    if not optimization.get("applied"):
+        return optimization.get("reason") or "no PC-side improvement"
+
+    baseline = optimization.get("baseline_summary") or {}
+    optimized = optimization.get("optimized_summary") or {}
+    baseline_npu = baseline.get("npu_utilization_pct", "-")
+    optimized_npu = optimized.get("npu_utilization_pct", "-")
+    baseline_fallback = ",".join(baseline.get("cpu_fallback_ops") or []) or "-"
+    optimized_fallback = ",".join(optimized.get("cpu_fallback_ops") or []) or "-"
+    candidate = optimization.get("best_candidate") or "optimized"
+    return f"{candidate}: {baseline_npu}->{optimized_npu}%; fallback {baseline_fallback}->{optimized_fallback}"
 
 
 def build_rows(
@@ -238,6 +273,7 @@ def build_rows(
                 model_result,
                 _lookup_vela_info(model_result["name"], vela_infos, conversion_by_name),
                 manifest_task=manifest_tasks.get(model_result["name"], manifest_tasks.get(base_name)),
+                conversion_result=conversion_by_name.get(base_name),
             )
         )
         board_names.add(model_result["name"])
@@ -271,12 +307,15 @@ def render_markdown(rows: list[dict[str, Any]], title: str) -> str:
 
     header = (
         f"# {title}\n\n"
-        "| Model | Task | Size (KB) | Arena (KB) | Avg (ms) | Min (ms) | Max (ms) | NPU% | CPU Fallback | Status | Reason |\n"
-        "|-------|------|-----------|------------|----------|----------|----------|------|--------------|--------|--------|"
+        "| Model | Task | Size (KB) | Arena (KB) | Avg (ms) | Min (ms) | Max (ms) | NPU% | CPU Fallback | NPU Optimization | Status | Reason |\n"
+        "|-------|------|-----------|------------|----------|----------|----------|------|--------------|------------------|--------|--------|"
     )
     body = "\n".join(
-        "| {Model} | {Task} | {Size (KB)} | {Arena (KB)} | {Avg (ms)} | {Min (ms)} | {Max (ms)} | {NPU%} | {CPU Fallback} | {Status} | {Reason} |".format_map(
-            {key: _escape_cell(value) for key, value in row.items()}
+        "| {Model} | {Task} | {Size (KB)} | {Arena (KB)} | {Avg (ms)} | {Min (ms)} | {Max (ms)} | {NPU%} | {CPU Fallback} | {NPU Optimization} | {Status} | {Reason} |".format_map(
+            {
+                key: _escape_cell(value)
+                for key, value in {"NPU Optimization": "-", **row}.items()
+            }
         )
         for row in rows
     )

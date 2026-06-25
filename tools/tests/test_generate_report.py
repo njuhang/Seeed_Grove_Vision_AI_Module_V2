@@ -328,6 +328,74 @@ def test_build_rows_treats_exported_from_source_as_success_without_failure_row()
     assert rows == []
 
 
+def test_build_rows_surfaces_npu_optimization_summary() -> None:
+    payload = {"models": [_ok_board_result("retinaface_mnet_face_160")]}
+    rows = build_rows(
+        payload,
+        manifest_tasks={"retinaface_mnet_face_160": "face_detection"},
+        vela_infos={
+            "retinaface_mnet_face_160": {
+                "npu_utilization_pct": 100.0,
+                "cpu_fallback_ops": [],
+            }
+        },
+        conversion_results=[
+            {
+                "name": "retinaface_mnet_face_160",
+                "task": "face_detection",
+                "status": "exported_from_source",
+                "notes": [],
+                "missing_dependencies": [],
+                "npu_optimization": {
+                    "applied": True,
+                    "best_candidate": "all_safe_rewrites",
+                    "baseline_summary": {
+                        "npu_utilization_pct": 39.4,
+                        "cpu_fallback_ops": ["Passthrough"],
+                    },
+                    "optimized_summary": {
+                        "npu_utilization_pct": 100.0,
+                        "cpu_fallback_ops": [],
+                    },
+                },
+            }
+        ],
+    )
+
+    row = rows[0]
+    assert row["NPU Optimization"] == "all_safe_rewrites: 39.4->100.0%; fallback Passthrough->-"
+
+
+def test_build_rows_marks_optimized_board_failure_with_baseline_fallback() -> None:
+    board_result = _ok_board_result("retinaface_mnet_face_160")
+    board_result["status"] = "load_failed"
+    board_result["status_reason"] = "optimized candidate failed AllocateTensors"
+
+    rows = build_rows(
+        {"models": [board_result]},
+        manifest_tasks={"retinaface_mnet_face_160": "face_detection"},
+        vela_infos={},
+        conversion_results=[
+            {
+                "name": "retinaface_mnet_face_160",
+                "task": "face_detection",
+                "status": "exported_from_source",
+                "notes": [],
+                "missing_dependencies": [],
+                "npu_optimization": {
+                    "applied": True,
+                    "best_candidate": "all_safe_rewrites",
+                    "baseline_vela_path": "artifacts/retinaface_mnet_face_160/baseline_vela.tflite",
+                    "optimized_vela_path": "artifacts/retinaface_mnet_face_160/optimized_vela.tflite",
+                },
+            }
+        ],
+    )
+
+    assert rows[0]["Status"] == "npu_opt_board_failed"
+    assert "baseline_vela.tflite" in rows[0]["Reason"]
+
+
 def test_build_rows_appends_model_zoo_comparison_diff_row() -> None:
     payload = {
         "models": [

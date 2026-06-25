@@ -1873,6 +1873,87 @@ def test_convert_manifest_can_isolate_source_exports_in_subprocess(tmp_path: Pat
     run_mock.assert_called_once()
 
 
+def test_convert_manifest_runs_npu_optimizer_by_default(tmp_path: Path) -> None:
+    manifest = tmp_path / "models.yaml"
+    _write_ultralytics_manifest(manifest, name="yolo11n_od_192")
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    artifacts_root = repo_root / "artifacts"
+    int8_path = artifacts_root / "yolo11n_od_192" / "yolo11n_od_192_int8.tflite"
+    vela_path = artifacts_root / "yolo11n_od_192" / "yolo11n_od_192_vela.tflite"
+    optimized_vela_path = artifacts_root / "yolo11n_od_192" / "yolo11n_od_192_vela_optimized.tflite"
+    vela_info_path = artifacts_root / "vela" / "yolo11n_od_192.vela_info.json"
+    optimized_info_path = artifacts_root / "vela" / "yolo11n_od_192_npu_opt.vela_info.json"
+    trace_path = artifacts_root / "yolo11n_od_192" / "optimizer_trace.json"
+
+    optimizer_result = convert_module.NpuOptimizationResult(
+        applied=True,
+        triggered=True,
+        reason="npu_utilization_pct 50.0 < 95.0",
+        best_candidate="all_safe_rewrites",
+        baseline_info_path=vela_info_path,
+        optimized_info_path=optimized_info_path,
+        baseline_vela_path=vela_path,
+        optimized_vela_path=optimized_vela_path,
+        trace_path=trace_path,
+        notes=["npu optimizer selected all_safe_rewrites"],
+        baseline_summary={"npu_utilization_pct": 50.0, "cpu_fallback_ops": ["Transpose"]},
+        optimized_summary={"npu_utilization_pct": 100.0, "cpu_fallback_ops": []},
+    )
+
+    with (
+        patch("tools.model_converter.convert._check_source_dependencies", return_value=[]),
+        patch(
+            "tools.model_converter.convert._convert_from_source",
+            return_value=(int8_path, vela_path, vela_info_path, ["generated baseline"]),
+        ),
+        patch("tools.model_converter.convert.optimize_tflite_for_npu", return_value=optimizer_result) as optimizer_mock,
+    ):
+        results = convert_manifest(
+            manifest_path=manifest,
+            repo_root=repo_root,
+            output_root=artifacts_root,
+            vela_dir=artifacts_root / "vela",
+        )
+
+    assert results[0].vela_model_path == str(optimized_vela_path)
+    assert results[0].vela_info_path == str(optimized_info_path)
+    assert results[0].npu_optimization["best_candidate"] == "all_safe_rewrites"
+    assert "npu optimizer selected all_safe_rewrites" in results[0].notes
+    optimizer_mock.assert_called_once()
+
+
+def test_convert_manifest_can_disable_npu_optimizer(tmp_path: Path) -> None:
+    manifest = tmp_path / "models.yaml"
+    _write_ultralytics_manifest(manifest, name="yolo11n_od_192")
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    artifacts_root = repo_root / "artifacts"
+    int8_path = artifacts_root / "yolo11n_od_192" / "yolo11n_od_192_int8.tflite"
+    vela_path = artifacts_root / "yolo11n_od_192" / "yolo11n_od_192_vela.tflite"
+    vela_info_path = artifacts_root / "vela" / "yolo11n_od_192.vela_info.json"
+
+    with (
+        patch("tools.model_converter.convert._check_source_dependencies", return_value=[]),
+        patch(
+            "tools.model_converter.convert._convert_from_source",
+            return_value=(int8_path, vela_path, vela_info_path, ["generated baseline"]),
+        ),
+        patch("tools.model_converter.convert.optimize_tflite_for_npu") as optimizer_mock,
+    ):
+        results = convert_manifest(
+            manifest_path=manifest,
+            repo_root=repo_root,
+            output_root=artifacts_root,
+            vela_dir=artifacts_root / "vela",
+            optimize_for_npu=False,
+        )
+
+    assert results[0].vela_model_path == str(vela_path)
+    assert results[0].npu_optimization is None
+    optimizer_mock.assert_not_called()
+
+
 def test_convert_manifest_isolates_worker_crash_and_falls_back_to_model_zoo(tmp_path: Path) -> None:
     manifest = tmp_path / "models.yaml"
     _write_ultralytics_manifest(manifest, name="yolo11n_od_192", model_zoo_ref="yolo11n_ref.tflite")

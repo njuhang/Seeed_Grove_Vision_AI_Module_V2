@@ -50,6 +50,8 @@ from tools.model_converter.tflite_rewrite import rewrite_float16_dequantize_cons
 from tools.model_converter.tflite_rewrite import rewrite_int8_conv_biases_to_int32
 from tools.model_converter.tflite_rewrite import rewrite_prelu_float_islands_to_int8
 from tools.model_converter.vela_compile import write_vela_artifacts
+from tools.model_converter.npu_optimizer import NpuOptimizationResult
+from tools.model_converter.npu_optimizer import optimize_tflite_for_npu
 
 # Per-source-type modules the in-process backend needs to import before the
 # conversion can run. Used purely for a dependency probe -- the actual imports
@@ -90,6 +92,7 @@ class ConversionResult:
     model_zoo_ref: str | None
     missing_dependencies: list[str]
     notes: list[str]
+    npu_optimization: dict[str, Any] | None = None
 
 
 def parse_tiers(raw: str) -> set[int]:
@@ -1120,6 +1123,38 @@ def _build_vela_kwargs(spec: ModelSpec) -> dict[str, Any]:
     return vela_kwargs
 
 
+def _maybe_optimize_for_npu(
+    *,
+    spec: ModelSpec,
+    int8_path: Path | None,
+    vela_path: Path | None,
+    vela_info_path: Path | None,
+    output_root: Path,
+    vela_dir: Path,
+    optimize_for_npu: bool,
+    notes: list[str],
+) -> tuple[Path | None, Path | None, dict[str, Any] | None]:
+    if not optimize_for_npu or int8_path is None or vela_path is None or vela_info_path is None:
+        return vela_path, vela_info_path, None
+
+    optimized_vela_path = artifact_dir(spec.name, output_root) / f"{spec.name}_vela_optimized.tflite"
+    result = optimize_tflite_for_npu(
+        model_name=spec.name,
+        int8_path=int8_path,
+        baseline_vela_path=vela_path,
+        baseline_info_path=vela_info_path,
+        final_vela_path=optimized_vela_path,
+        artifact_dir=artifact_dir(spec.name, output_root),
+        vela_dir=vela_dir,
+        vela_kwargs=_build_vela_kwargs(spec),
+    )
+    notes.extend(result.notes)
+    summary = result.to_summary() if result.triggered or result.applied else None
+    if result.applied:
+        return result.optimized_vela_path, result.optimized_info_path, summary
+    return vela_path, vela_info_path, summary
+
+
 def convert_model(
     spec: ModelSpec,
     manifest_path: str | Path = "configs/models.yaml",
@@ -1129,6 +1164,7 @@ def convert_model(
     skip_vela: bool = False,
     allow_model_zoo_ref: bool = True,
     isolate_source_exports: bool = False,
+    optimize_for_npu: bool = True,
 ) -> ConversionResult:
     manifest_path = Path(manifest_path).resolve()
     repo_root = Path(repo_root).resolve()
@@ -1142,6 +1178,7 @@ def convert_model(
     int8_path: Path | None = None
     vela_path: Path | None = None
     vela_info_path: Path | None = None
+    npu_optimization: dict[str, Any] | None = None
 
     source_type = spec.source["type"]
     required = REQUIRED_SOURCE_DEPS.get(source_type, ())
@@ -1182,6 +1219,16 @@ def convert_model(
                     skip_vela=skip_vela,
                 )
             notes.extend(source_notes)
+            vela_path, vela_info_path, npu_optimization = _maybe_optimize_for_npu(
+                spec=spec,
+                int8_path=int8_path,
+                vela_path=vela_path,
+                vela_info_path=vela_info_path,
+                output_root=output_root,
+                vela_dir=vela_dir,
+                optimize_for_npu=optimize_for_npu and not skip_vela,
+                notes=notes,
+            )
             return ConversionResult(
                 name=spec.name,
                 task=spec.task,
@@ -1196,6 +1243,7 @@ def convert_model(
                 model_zoo_ref=spec.model_zoo_ref,
                 missing_dependencies=[],
                 notes=notes,
+                npu_optimization=npu_optimization,
             )
         except Exception as exc:
             notes.append(f"source export failed: {exc}")
@@ -1225,6 +1273,7 @@ def convert_model(
                     model_zoo_ref=spec.model_zoo_ref,
                     missing_dependencies=[],
                     notes=notes,
+                    npu_optimization=None,
                 )
             status = "export_failed"
     elif not source_supported:
@@ -1260,6 +1309,7 @@ def convert_model(
             model_zoo_ref=spec.model_zoo_ref,
             missing_dependencies=missing_dependencies,
             notes=notes,
+            npu_optimization=None,
         )
 
     return ConversionResult(
@@ -1276,6 +1326,7 @@ def convert_model(
         model_zoo_ref=spec.model_zoo_ref,
         missing_dependencies=missing_dependencies,
         notes=notes,
+        npu_optimization=npu_optimization,
     )
 
 
@@ -1289,6 +1340,7 @@ def convert_manifest(
     allow_model_zoo_ref: bool = True,
     isolate_source_exports: bool = False,
     tiers: set[int] | None = None,
+    optimize_for_npu: bool = True,
 ) -> list[ConversionResult]:
     manifest_path = Path(manifest_path)
     models = load_models(manifest_path)
@@ -1303,6 +1355,7 @@ def convert_manifest(
             skip_vela=skip_vela,
             allow_model_zoo_ref=allow_model_zoo_ref,
             isolate_source_exports=isolate_source_exports,
+            optimize_for_npu=optimize_for_npu,
         )
         for model in selected
     ]
@@ -1332,6 +1385,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-vela", action="store_true")
     parser.add_argument("--no-model-zoo-ref", action="store_true")
     parser.add_argument("--isolate-source-exports", action="store_true")
+    parser.add_argument("--no-npu-optimize", action="store_true")
     return parser.parse_args()
 
 
@@ -1347,6 +1401,7 @@ def main() -> int:
         allow_model_zoo_ref=not args.no_model_zoo_ref,
         isolate_source_exports=args.isolate_source_exports,
         tiers=parse_tiers(args.tiers),
+        optimize_for_npu=not args.no_npu_optimize,
     )
     summary_path = write_summary(results, args.output_dir)
 

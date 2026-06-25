@@ -1,6 +1,94 @@
+import shutil
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
+
+
+@dataclass(frozen=True)
+class NpuRewriteRule:
+    name: str
+    description: str
+    apply: Callable[[Path, Path], int]
+
+
+@dataclass(frozen=True)
+class AppliedRewriteRule:
+    name: str
+    description: str
+    rewritten_count: int
+
+
+def default_npu_rewrite_rules() -> tuple[NpuRewriteRule, ...]:
+    return (
+        NpuRewriteRule(
+            "float16_dequantize_constants",
+            "Fold constant FLOAT16->FLOAT32 DEQUANTIZE ops offline",
+            rewrite_float16_dequantize_constants,
+        ),
+        NpuRewriteRule(
+            "int8_conv_biases_to_int32",
+            "Rewrite invalid INT8 Conv/DepthwiseConv bias tensors to INT32",
+            rewrite_int8_conv_biases_to_int32,
+        ),
+        NpuRewriteRule(
+            "prelu_float_islands_to_int8",
+            "Rewrite DEQUANTIZE->PRELU->QUANTIZE float islands to int8 PReLU",
+            rewrite_prelu_float_islands_to_int8,
+        ),
+        NpuRewriteRule(
+            "serving_default_signature",
+            "Ensure a serving_default signature exists for quantizer/runtime tooling",
+            _ensure_serving_default_signature_count,
+        ),
+    )
+
+
+def apply_npu_rewrite_rules(
+    input_path: str | Path,
+    output_path: str | Path,
+    *,
+    rules: tuple[NpuRewriteRule, ...] | None = None,
+    rule_names: tuple[str, ...] | list[str] | None = None,
+) -> list[AppliedRewriteRule]:
+    input_path = Path(input_path)
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    selected_rules = rules or default_npu_rewrite_rules()
+    if rule_names is not None:
+        allowed = set(rule_names)
+        selected_rules = tuple(rule for rule in selected_rules if rule.name in allowed)
+
+    current_path = input_path
+    applied: list[AppliedRewriteRule] = []
+    scratch_paths: list[Path] = []
+    for index, rule in enumerate(selected_rules):
+        next_path = output_path.with_name(f"{output_path.stem}.{index}.{rule.name}.tmp.tflite")
+        rewritten_count = rule.apply(current_path, next_path)
+        applied.append(
+            AppliedRewriteRule(
+                name=rule.name,
+                description=rule.description,
+                rewritten_count=rewritten_count,
+            )
+        )
+        current_path = next_path
+        scratch_paths.append(next_path)
+
+    if selected_rules:
+        shutil.copy2(current_path, output_path)
+    else:
+        shutil.copy2(input_path, output_path)
+
+    for scratch_path in scratch_paths:
+        if scratch_path.exists():
+            scratch_path.unlink()
+    return applied
+
+
+def _ensure_serving_default_signature_count(input_path: Path, output_path: Path) -> int:
+    return 1 if ensure_serving_default_signature(input_path, output_path) else 0
 
 
 
