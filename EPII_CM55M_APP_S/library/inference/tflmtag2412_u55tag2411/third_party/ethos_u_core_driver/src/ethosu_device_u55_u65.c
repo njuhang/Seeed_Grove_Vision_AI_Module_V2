@@ -151,28 +151,37 @@ void ethosu_dev_run_command_stream(struct ethosu_device *dev,
     uint64_t qbase = ethosu_address_remap((uintptr_t)cmd_stream_ptr, -1);
     assert(qbase <= ADDRESS_MASK);
     LOG_DEBUG("QBASE=0x%016llx, QSIZE=%" PRIu32 ", cmd_stream_ptr=%p", qbase, cms_length, cmd_stream_ptr);
+    printf("ETHOSU Device: run start cms_length=%" PRIu32 " num_base=%d qbase=0x%08" PRIx32 "\r\n",
+           cms_length,
+           num_base_addr,
+           (uint32_t)qbase);
 
     dev->reg->QBASE.word[0] = qbase & 0xffffffff;
 #ifdef ETHOSU65
     dev->reg->QBASE.word[1] = qbase >> 32;
 #endif
     dev->reg->QSIZE.word = cms_length;
+    printf("ETHOSU Device: qbase/qsize written\r\n");
 
     for (int i = 0; i < num_base_addr; i++)
     {
         uint64_t addr = ethosu_address_remap(base_addr[i], i);
         assert(addr <= ADDRESS_MASK);
         LOG_DEBUG("BASEP%d=0x%016llx", i, addr);
+        printf("ETHOSU Device: basep[%d]=0x%08" PRIx32 "\r\n", i, (uint32_t)addr);
         dev->reg->BASEP[i].word[0] = addr & 0xffffffff;
 #ifdef ETHOSU65
         dev->reg->BASEP[i].word[1] = addr >> 32;
 #endif
     }
+    printf("ETHOSU Device: basep written\r\n");
 
     cmd.word                        = dev->reg->CMD.word & NPU_CMD_PWR_CLK_MASK;
     cmd.transition_to_running_state = 1;
 
+    printf("ETHOSU Device: cmd write=0x%08" PRIx32 "\r\n", cmd.word);
     dev->reg->CMD.word = cmd.word;
+    printf("ETHOSU Device: cmd write done status=0x%08" PRIx32 "\r\n", dev->reg->STATUS.word);
     LOG_DEBUG("CMD=0x%08" PRIx32, cmd.word);
 }
 

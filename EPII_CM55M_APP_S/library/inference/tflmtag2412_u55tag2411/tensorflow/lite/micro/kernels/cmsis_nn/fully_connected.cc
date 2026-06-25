@@ -126,7 +126,8 @@ TfLiteStatus Prepare(TfLiteContext* context, TfLiteNode* node) {
     buf_size = arm_fully_connected_s16_get_buffer_size(&filter_dims);
   } else if (input->type == kTfLiteInt8 && filter->type != kTfLiteInt4) {
     const bool is_conv_1x1_possible =
-        output_dim_count > 2 && data->accum_depth % 4 == 0;
+        output_dim_count > 2 && data->accum_depth % 4 == 0 &&
+        data->reference_op_data.filter_zero_point == 0;
 
     if (is_conv_1x1_possible) {
       // In case per tensor quantization we use a scratch buffer to fake

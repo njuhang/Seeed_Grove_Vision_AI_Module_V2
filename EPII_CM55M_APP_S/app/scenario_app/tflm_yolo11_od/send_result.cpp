@@ -4,7 +4,9 @@ extern "C" {
 #include "tflm_yolo11_od.h"
 }
 #include <math.h>
+#include <new>
 
+#include <cstdio>
 #include <cstring>
 #include <cstdint>
 #include <forward_list>
@@ -194,17 +196,26 @@ if (!img || !img->data || !img->size) [[unlikely]]
 
     static std::size_t size        = 0;
     static std::size_t buffer_size = 0;
+    constexpr std::size_t buffer_growth_step = 4096;
 
 
-    // only reallcate memory when buffer size is not enough
+    // Grow in coarse steps so preview JPEG jitter does not fragment the heap.
     if (img->size > size) [[unlikely]] {
         size        = img->size;
-        buffer_size = (((size + 2u) / 3u) << 2u) + 1u;  // base64 encoded size, +1 for terminating null character
-        printf("buffer_size: %d may be too small reallocating\r\n\n",buffer_size);
-        printf("if still fail, please modify linker script heap size\r\n\n");
+        std::size_t required_size = (((size + 2u) / 3u) << 2u) + 1u;  // base64 encoded size, +1 for terminating null character
+        std::size_t next_buffer_size =
+            ((required_size + buffer_growth_step - 1u) / buffer_growth_step) * buffer_growth_step;
+
         if (img_2_json_str_buffer) [[likely]]
             delete[] img_2_json_str_buffer;
-        img_2_json_str_buffer = new char[buffer_size]{};
+        img_2_json_str_buffer = new (std::nothrow) char[next_buffer_size]{};
+        if (!img_2_json_str_buffer) [[unlikely]] {
+            buffer_size = 0;
+            printf("failed to allocate preview buffer, required=%u\r\n",
+                   static_cast<unsigned int>(next_buffer_size));
+            return std::string("\"image\": \"\"");
+        }
+        buffer_size = next_buffer_size;
     }
 
     std::memset(img_2_json_str_buffer, 0, buffer_size);
@@ -797,15 +808,26 @@ void send_device_id() {
 std::string  algo_tick_2_json_str(uint32_t algo_tick) {
     std::string ss;
     const char* delim = "";
+    constexpr uint32_t algo_tick_per_ms = 400000;  // 400 MHz CPU clock => 400000 ticks per millisecond
+    const uint32_t algo_tick_ms_int = algo_tick / algo_tick_per_ms;
+    const uint32_t algo_tick_ms_frac = ((algo_tick % algo_tick_per_ms) * 1000u) / algo_tick_per_ms;
+    char algo_tick_ms_buffer[24]{};
+
+    std::snprintf(algo_tick_ms_buffer,
+                  sizeof(algo_tick_ms_buffer),
+                  "%u.%03u",
+                  algo_tick_ms_int,
+                  algo_tick_ms_frac);
 
     ss = "\"algo_tick\": [";
-    
+
     ss += concat_strings(delim,
                             "[",
                             std::to_string(algo_tick),
                             "]");
     delim = ", ";
     ss += "]";
+    ss += concat_strings(", \"algo_time_ms\": ", algo_tick_ms_buffer);
 
     return ss;
 }

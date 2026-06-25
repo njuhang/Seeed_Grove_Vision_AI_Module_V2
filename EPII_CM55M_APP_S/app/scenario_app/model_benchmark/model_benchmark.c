@@ -89,6 +89,15 @@ static uint32_t g_mm_size = 0;
 static uint32_t g_cpu_freq = 0;
 static model_table_t g_model_table;
 
+typedef struct {
+	uint32_t arena_used_bytes;
+	uint32_t avg_latency_ms_x1000;
+	uint32_t min_latency_ms_x1000;
+	uint32_t max_latency_ms_x1000;
+	uint32_t runs;
+	const char *status;
+} model_benchmark_result_t;
+
 // Snapshot of the SystemTick at app_main start, used to derive a monotonic
 // uptime (ms since power-on). The board has no RTC, so the JSON timestamp
 // field reports uptime rather than wall-clock time.
@@ -132,13 +141,13 @@ static uint32_t benchmark_arena_size_limit(void)
 	return TENSOR_ARENA_SIZE_MAX;
 }
 
-static uint32_t cycles_to_ms(uint32_t cycles)
+static uint32_t cycles_to_ms_x1000(uint32_t cycles)
 {
 	if (g_cpu_freq == 0) {
 		return 0;
 	}
 
-	return (uint32_t)(((uint64_t)cycles * 1000ULL) / g_cpu_freq);
+	return (uint32_t)(((uint64_t)cycles * 1000000ULL) / g_cpu_freq);
 }
 
 /**
@@ -193,13 +202,11 @@ static void run_legacy_benchmark(void) {
 	uint32_t min_time = 0xFFFFFFFF;
 	uint32_t max_time = 0;
 	uint32_t total_time = 0;
-	uint32_t benchmark_times[NUM_BENCHMARK_RUNS];
 
 	for (int i = 0; i < NUM_BENCHMARK_RUNS; i++) {
 		cv_model_benchmark_fill_random_input();
 
 		uint32_t time = cv_model_benchmark_run_inference();
-		benchmark_times[i] = time;
 
 		if (time > 0) {
 			total_time += time;
@@ -233,55 +240,106 @@ static void print_model_result_prefix(const model_table_entry_t *entry, bool fir
 		entry->model_size_bytes);
 }
 
-static void benchmark_one_model(const model_table_entry_t *entry, bool first_entry)
+static void print_ms_x1000(uint32_t value)
+{
+	xprintf("%u.%03u", value / 1000U, value % 1000U);
+}
+
+static void benchmark_one_model(const model_table_entry_t *entry, model_benchmark_result_t *out_result)
 {
 	uint32_t min_cycles = 0xFFFFFFFF;
 	uint32_t max_cycles = 0;
 	uint64_t total_cycles = 0;
+	uint32_t successful_runs = 0;
 
+	out_result->arena_used_bytes = 0;
+	out_result->avg_latency_ms_x1000 = 0;
+	out_result->min_latency_ms_x1000 = 0;
+	out_result->max_latency_ms_x1000 = 0;
+	out_result->runs = 0;
+	out_result->status = "invoke_failed";
+
+	xprintf("benchmark_one_model: start %s @0x%08x\r\n", entry->name, 0x3A000000 + entry->flash_addr);
 	benchmark_memory_reset();
 	if (cv_model_benchmark_load_model(0x3A000000 + entry->flash_addr,
 			benchmark_arena_size_limit()) != 0) {
-		print_model_result_prefix(entry, first_entry);
-		xprintf("\"arena_used_bytes\":0,\"latency_ms\":{\"avg\":0,\"min\":0,\"max\":0},"
-			"\"runs\":0,\"status\":\"load_failed\"}");
+		xprintf("benchmark_one_model: load_failed %s\r\n", entry->name);
+		out_result->status = "load_failed";
 		return;
 	}
+	xprintf("benchmark_one_model: load_ok %s arena=%u\r\n", entry->name, cv_model_benchmark_arena_bytes_used());
 
+	out_result->arena_used_bytes = cv_model_benchmark_arena_bytes_used();
 	cv_model_benchmark_fill_zero_input();
 	for (int i = 0; i < WARMUP_RUNS; ++i) {
-		(void)cv_model_benchmark_run_inference();
+		xprintf("benchmark_one_model: warmup %s %d/%d\r\n", entry->name, i + 1, WARMUP_RUNS);
+		if (cv_model_benchmark_run_inference() == 0) {
+			xprintf("benchmark_one_model: warmup_invoke_failed %s\r\n", entry->name);
+			cv_model_benchmark_unload_model();
+			return;
+		}
 	}
 
 	for (int i = 0; i < NUM_BENCHMARK_RUNS; ++i) {
+		xprintf("benchmark_one_model: run %s %d/%d\r\n", entry->name, i + 1, NUM_BENCHMARK_RUNS);
 		uint32_t cycles = cv_model_benchmark_run_inference();
+		if (cycles == 0) {
+			xprintf("benchmark_one_model: measured_invoke_failed %s at run %d\r\n", entry->name, i + 1);
+			cv_model_benchmark_unload_model();
+			return;
+		}
+
 		total_cycles += cycles;
 		if (cycles < min_cycles) min_cycles = cycles;
 		if (cycles > max_cycles) max_cycles = cycles;
+		++successful_runs;
 	}
 
-	print_model_result_prefix(entry, first_entry);
-	xprintf(
-		"\"arena_used_bytes\":%u,\"latency_ms\":{\"avg\":%u,\"min\":%u,\"max\":%u},"
-		"\"runs\":%u,\"status\":\"ok\"}",
-		cv_model_benchmark_arena_bytes_used(),
-		cycles_to_ms((uint32_t)(total_cycles / NUM_BENCHMARK_RUNS)),
-		cycles_to_ms(min_cycles),
-		cycles_to_ms(max_cycles),
-		NUM_BENCHMARK_RUNS);
+	if (successful_runs == 0) {
+		cv_model_benchmark_unload_model();
+		return;
+	}
+
+	out_result->avg_latency_ms_x1000 = cycles_to_ms_x1000((uint32_t)(total_cycles / successful_runs));
+	out_result->min_latency_ms_x1000 = cycles_to_ms_x1000(min_cycles);
+	out_result->max_latency_ms_x1000 = cycles_to_ms_x1000(max_cycles);
+	out_result->runs = successful_runs;
+	out_result->status = "ok";
+	xprintf("benchmark_one_model: done %s runs=%u\r\n", entry->name, successful_runs);
 
 	cv_model_benchmark_unload_model();
 }
 
+static void print_model_result(
+	const model_table_entry_t *entry,
+	const model_benchmark_result_t *result,
+	bool first_entry)
+{
+	print_model_result_prefix(entry, first_entry);
+	xprintf("\"arena_used_bytes\":%u,\"latency_ms\":{\"avg\":", result->arena_used_bytes);
+	print_ms_x1000(result->avg_latency_ms_x1000);
+	xprintf(",\"min\":");
+	print_ms_x1000(result->min_latency_ms_x1000);
+	xprintf(",\"max\":");
+	print_ms_x1000(result->max_latency_ms_x1000);
+	xprintf("},\"runs\":%u,\"status\":\"%s\"}", result->runs, result->status);
+}
+
 static void run_multi_model_benchmark(void)
 {
+	model_benchmark_result_t results[MAX_MODEL_COUNT];
+
+	for (uint32_t i = 0; i < g_model_table.count; ++i) {
+		benchmark_one_model(&g_model_table.entries[i], &results[i]);
+	}
+
 	xprintf(
 		"{\"benchmark\":{\"device\":\"himax_hx6538\",\"firmware\":\"model_benchmark_v1\","
 		"\"timestamp\":%lu,\"timestamp_unit\":\"ms_since_boot\"},\"models\":[",
 		(unsigned long)uptime_ms());
 
 	for (uint32_t i = 0; i < g_model_table.count; ++i) {
-		benchmark_one_model(&g_model_table.entries[i], i == 0);
+		print_model_result(&g_model_table.entries[i], &results[i], i == 0);
 	}
 
 	xprintf("]}\r\n");

@@ -320,6 +320,10 @@ static int handle_command_stream(struct ethosu_driver *drv, const uint8_t *cmd_s
     uint32_t cms_bytes = cms_length * BYTES_IN_32_BITS;
 
     LOG_INFO("handle_command_stream: cmd_stream=%p, cms_length %d", cmd_stream, cms_length);
+    printf("ETHOSU Driver: handle_command_stream start cms_words=%d cms_bytes=%" PRIu32 " num_base=%d\r\n",
+           cms_length,
+           cms_bytes,
+           drv->job.num_base_addr);
 
     if (0 != ((ptrdiff_t)cmd_stream & MASK_16_BYTE_ALIGN))
     {
@@ -357,24 +361,34 @@ static int handle_command_stream(struct ethosu_driver *drv, const uint8_t *cmd_s
     {
         if (drv->basep_flush_mask & (1 << i))
         {
+            printf("ETHOSU Driver: flush base[%d] addr=0x%08" PRIx32 " size=%" PRIuPTR "\r\n",
+                   i,
+                   (uint32_t)drv->job.base_addr[i],
+                   (uintptr_t)drv->job.base_addr_size[i]);
             ethosu_flush_dcache((uint32_t *)(uintptr_t)drv->job.base_addr[i], drv->job.base_addr_size[i]);
         }
     }
+    printf("ETHOSU Driver: flush done\r\n");
 
     // Request power gating disabled during inference run
+    printf("ETHOSU Driver: request_power begin\r\n");
     if (ethosu_request_power(drv))
     {
         LOG_ERR("Failed to request power");
         return -1;
     }
+    printf("ETHOSU Driver: request_power done\r\n");
 
     drv->job.state = ETHOSU_JOB_RUNNING;
 
     // Inference begin callback
     ethosu_inference_begin(drv, drv->job.user_arg);
+    printf("ETHOSU Driver: inference_begin done\r\n");
 
     // Execute the command stream
+    printf("ETHOSU Driver: dev_run begin\r\n");
     ethosu_dev_run_command_stream(&drv->dev, cmd_stream, cms_bytes, drv->job.base_addr, drv->job.num_base_addr);
+    printf("ETHOSU Driver: dev_run returned\r\n");
 
     return 0;
 }
@@ -542,6 +556,7 @@ void ethosu_get_hw_info(struct ethosu_driver *drv, struct ethosu_hw_info *hw)
 int ethosu_wait(struct ethosu_driver *drv, bool block)
 {
     int ret = 0;
+    printf("ETHOSU Driver: wait start state=%d block=%d\r\n", drv->job.state, block ? 1 : 0);
 
     switch (drv->job.state)
     {
@@ -571,7 +586,9 @@ int ethosu_wait(struct ethosu_driver *drv, bool block)
 
         // Wait for interrupt in blocking mode. In non-blocking mode
         // the interrupt has already triggered
+        printf("ETHOSU Driver: wait semaphore_take begin\r\n");
         ret = ethosu_semaphore_take(drv->semaphore, ETHOSU_SEMAPHORE_WAIT_INFERENCE);
+        printf("ETHOSU Driver: wait semaphore_take ret=%d state=%d result=%d\r\n", ret, drv->job.state, drv->job.result);
         if (ret < 0)
         {
             drv->job.result = ETHOSU_JOB_RESULT_TIMEOUT;
@@ -615,6 +632,7 @@ int ethosu_wait(struct ethosu_driver *drv, bool block)
         else
         {
             LOG_DEBUG("Inference finished successfully...");
+            printf("ETHOSU Driver: wait success\r\n");
             ret = 0;
         }
 

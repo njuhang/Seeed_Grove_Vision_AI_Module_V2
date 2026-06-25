@@ -148,11 +148,22 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
   // the input and output tensors outside of the TFLM arena.
   num_tensors = std::min(num_tensors, 8);
 
+  MicroPrintf("ETHOSU Eval: cms=%d base_addrs=%d", data->cms_data_size,
+              num_tensors);
+  for (i = 0; i < num_tensors; ++i) {
+    MicroPrintf("ETHOSU Eval: base[%d]=0x%llx size=%u", i,
+                static_cast<unsigned long long>(base_addrs[i]),
+                static_cast<unsigned int>(base_addrs_size[i]));
+  }
+
   struct ethosu_driver* drv = ethosu_reserve_driver();
+  MicroPrintf("ETHOSU Eval: reserve_driver=%p", drv);
   result = ethosu_invoke_v3(drv, cms_data, data->cms_data_size, base_addrs,
                             base_addrs_size, num_tensors,
                             GetMicroContext(context)->external_context());
+  MicroPrintf("ETHOSU Eval: invoke_v3 result=%d", result);
   ethosu_release_driver(drv);
+  MicroPrintf("ETHOSU Eval: release_driver done");
 
   if (-1 == result) {
     return kTfLiteError;

@@ -35,7 +35,7 @@
 #include "memory_manage.h"
 #include <send_result.h>
 
-#define YOLO11_NO_POST_SEPARATE_OUTPUT 1
+#define YOLO11_NO_POST_SEPARATE_OUTPUT 0
 
 #define INPUT_IMAGE_CHANNELS 3
 
@@ -972,8 +972,9 @@ uint32_t judge_case_data;
 uint32_t g_trans_type;
 hx_drv_swreg_aon_get_appused1(&judge_case_data);
 g_trans_type = (judge_case_data>>16);
-if( g_trans_type == 0 || g_trans_type == 2)// transfer type is (UART) or (UART & SPI) 
+if( g_trans_type == 0 || g_trans_type == 2)// transfer type is (UART) or (UART & SPI)
 {
+	static bool sent_device_info = false;
 	//invalid dcache to let uart can send the right jpeg img out
 	hx_InvalidateDCache_by_Addr((volatile void *)app_get_jpeg_addr(), sizeof(uint8_t) *app_get_jpeg_sz());
 
@@ -985,7 +986,10 @@ if( g_trans_type == 0 || g_trans_type == 2)// transfer type is (UART) or (UART &
 	temp_el_jpg_img.format = EL_PIXEL_FORMAT_JPEG;
 	temp_el_jpg_img.rotate = EL_PIXEL_ROTATE_0;
 
-	send_device_id();
+	if (!sent_device_info) {
+		send_device_id();
+		sent_device_info = true;
+	}
 	// event_reply(concat_strings(", ", box_results_2_json_str(el_algo), ", ", img_2_json_str(&temp_el_jpg_img)));
 	event_reply(concat_strings(", ", algo_tick_2_json_str(algoresult_yolo11n_ob->algo_tick),", ", box_results_2_json_str(el_algo), ", ", img_2_json_str(&temp_el_jpg_img)));
 }

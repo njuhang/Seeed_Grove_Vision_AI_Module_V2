@@ -15,6 +15,9 @@ limitations under the License.
 
 #include "tensorflow/lite/kernels/internal/reference/dequantize.h"
 
+#include <cstdint>
+#include <cstring>
+
 #include "tensorflow/lite/c/builtin_op_data.h"
 #include "tensorflow/lite/c/common.h"
 #include "tensorflow/lite/kernels/internal/quantization_util.h"
@@ -27,6 +30,41 @@ limitations under the License.
 #include "tensorflow/lite/micro/micro_log.h"
 
 namespace tflite {
+namespace {
+
+float Float16ToFloat32(TfLiteFloat16 value) {
+  const uint32_t half = value.data;
+  const uint32_t sign = (half & 0x8000u) << 16;
+  uint32_t exponent = (half >> 10) & 0x1fu;
+  uint32_t mantissa = half & 0x03ffu;
+  uint32_t bits = 0;
+
+  if (exponent == 0) {
+    if (mantissa == 0) {
+      bits = sign;
+    } else {
+      int normalized_exponent = -14;
+      while ((mantissa & 0x0400u) == 0) {
+        mantissa <<= 1;
+        --normalized_exponent;
+      }
+      mantissa &= 0x03ffu;
+      bits = sign | (static_cast<uint32_t>(normalized_exponent + 127) << 23) |
+             (mantissa << 13);
+    }
+  } else if (exponent == 0x1fu) {
+    bits = sign | 0x7f800000u | (mantissa << 13);
+  } else {
+    exponent = exponent + (127 - 15);
+    bits = sign | (exponent << 23) | (mantissa << 13);
+  }
+
+  float result;
+  std::memcpy(&result, &bits, sizeof(result));
+  return result;
+}
+
+}  // namespace
 
 void* DequantizeInit(TfLiteContext* context, const char* buffer,
                      size_t length) {
@@ -66,6 +104,18 @@ TfLiteStatus DequantizeEval(TfLiteContext* context, TfLiteNode* node) {
                                 tflite::micro::GetTensorShape(output),
                                 tflite::micro::GetTensorData<float>(output));
       break;
+    case kTfLiteFloat16: {
+      const int flat_size =
+          MatchingFlatSize(tflite::micro::GetTensorShape(input),
+                           tflite::micro::GetTensorShape(output));
+      const TfLiteFloat16* input_data =
+          tflite::micro::GetTensorData<TfLiteFloat16>(input);
+      float* output_data = tflite::micro::GetTensorData<float>(output);
+      for (int i = 0; i < flat_size; ++i) {
+        output_data[i] = Float16ToFloat32(input_data[i]);
+      }
+      break;
+    }
     default:
       MicroPrintf("Input %s, output %s not supported.",
                   TfLiteTypeGetName(input->type),

@@ -136,12 +136,9 @@ TfLiteStatus CalculateOpDataFullyConnected(
                        &data->output_shift);
   }
 
-  // Filter weights will always be symmetric quantized since we only support
-  // int8 quantization. See
-  // https://github.com/tensorflow/tensorflow/issues/44912 for additional
-  // context.
-  TFLITE_DCHECK(filter->params.zero_point == 0);
-
+  // Static int8 filter weights are usually symmetric, but some transformer
+  // attention matmuls are represented as FULLY_CONNECTED with a dynamic RHS.
+  // Keep the zero point so kernels that support non-zero RHS offsets can run.
   data->input_zero_point = input->params.zero_point;
   data->filter_zero_point = filter->params.zero_point;
   data->output_zero_point = output->params.zero_point;

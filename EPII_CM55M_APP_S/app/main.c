@@ -341,3 +341,14 @@ int main(void)
 	return 0;
 }
 #endif
+
+#ifdef MODEL_BENCHMARK
+#include "model_benchmark.h"
+/** main entry */
+int main(void)
+{
+	board_init();
+	app_main();
+	return 0;
+}
+#endif
