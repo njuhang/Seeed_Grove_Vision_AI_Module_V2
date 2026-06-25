@@ -39,3 +39,29 @@ we2_image_gen_local/Images*.txt
 *.img
 
 .vscode/
+
+# Python caches
+**/__pycache__/
+.pytest_cache/
+
+# Local benchmark scratch files
+%SystemDrive%/
+build_model_benchmark.log
+calibration_image_sample_data_20x128x128x3_float32.npy
+yolov8n.onnx
+yolov8n_saved_model/
+model_zoo/**/_temp_model_*_preamble_data.bin
+
+# Local/generated benchmark outputs and evidence bundles
+/artifacts/
+/artifacts_debug/
+/artifacts_rootcause/
+/datasets/
+/grove-vision-local-toolkit/
+
+# Local agent/editor state
+/.claude/
+/EPII_CM55M_APP_S/.claude/
+
+# Downloaded model weights are kept under artifacts_debug/vendor/model_weights
+/*.pt
