@@ -1,6 +1,9 @@
 import json
 
 from tools.report.generate_report import build_rows
+from tools.report.generate_report import load_conversion_summary
+from tools.report.generate_report import load_payload
+from tools.report.generate_report import load_vela_infos
 from tools.report.generate_report import merge_failure_row
 from tools.report.generate_report import merge_result_row
 from tools.report.generate_report import render_markdown
@@ -38,6 +41,19 @@ def _manifest_text() -> str:
     )
 
 
+def test_load_vela_infos_accepts_utf8_bom(tmp_path) -> None:
+    vela_info = tmp_path / "yolo11s_od_192.vela_info.json"
+    vela_info.write_text(
+        "\ufeff" + json.dumps({"npu_utilization_pct": 98.5, "cpu_fallback_ops": ["Passthrough"]}),
+        encoding="utf-8",
+    )
+
+    infos = load_vela_infos(tmp_path)
+
+    assert infos["yolo11s_od_192"]["npu_utilization_pct"] == 98.5
+    assert infos["yolo11s_od_192"]["cpu_fallback_ops"] == ["Passthrough"]
+
+
 def test_merge_result_row() -> None:
     board_result = {
         "name": "yolo11n_od_192",
@@ -59,6 +75,47 @@ def test_merge_result_row() -> None:
     assert row["CPU Fallback"] == "RESHAPE,TRANSPOSE"
 
 
+
+def test_merge_result_row_preserves_board_status_reason() -> None:
+    board_result = {
+        "name": "segformerb0_seg_64",
+        "task": "semantic_segmentation",
+        "model_size_bytes": 999248,
+        "arena_used_bytes": 0,
+        "latency_ms": {"avg": 0.0, "min": 0.0, "max": 0.0},
+        "status": "load_failed",
+        "status_reason": "AllocateTensors requested 4,304,384 bytes; available 1,811,520.",
+    }
+
+    row = merge_result_row(board_result, {})
+
+    assert row["Status"] == "load_failed"
+    assert "AllocateTensors requested" in row["Reason"]
+
+
+
+def test_load_payload_accepts_utf8_bom(tmp_path) -> None:
+    payload_path = tmp_path / "benchmark_result.json"
+    payload_path.write_text(
+        "\ufeff" + json.dumps({"benchmark": {"device": "himax_hx6538"}, "models": []}),
+        encoding="utf-8",
+    )
+
+    payload = load_payload(payload_path)
+
+    assert payload["benchmark"]["device"] == "himax_hx6538"
+
+
+def test_load_conversion_summary_accepts_utf8_bom(tmp_path) -> None:
+    summary_path = tmp_path / "conversion_summary.json"
+    summary_path.write_text(
+        "\ufeff" + json.dumps({"results": [{"name": "deeplabv3_mbnv3_seg_320"}]}),
+        encoding="utf-8",
+    )
+
+    results = load_conversion_summary(summary_path)
+
+    assert results[0]["name"] == "deeplabv3_mbnv3_seg_320"
 def test_merge_result_row_renders_high_npu_and_single_fallback_op() -> None:
     # Regression for the vela 5.1.0 data path: parse_vela_output feeds
     # npu_utilization_pct / cpu_fallback_ops into merge_result_row; this locks
@@ -247,6 +304,210 @@ def test_build_rows_does_not_duplicate_model_that_ran_on_board() -> None:
     )
 
     assert sum(1 for r in rows if r["Model"] == "yolo11n_od_192") == 1
+
+
+def test_build_rows_treats_exported_from_source_as_success_without_failure_row() -> None:
+    payload = {"models": []}
+    conversion_results = [
+        {
+            "name": "yolo11n_od_192",
+            "task": "object_detection",
+            "status": "exported_from_source",
+            "notes": [],
+            "missing_dependencies": [],
+        }
+    ]
+
+    rows = build_rows(
+        payload,
+        manifest_tasks={"yolo11n_od_192": "object_detection"},
+        vela_infos={},
+        conversion_results=conversion_results,
+    )
+
+    assert rows == []
+
+
+def test_build_rows_appends_model_zoo_comparison_diff_row() -> None:
+    payload = {
+        "models": [
+            {
+                "name": "yolo11n_od_192 (ours)",
+                "task": "object_detection",
+                "model_size_bytes": 2048000,
+                "arena_used_bytes": 1048576,
+                "latency_ms": {"avg": 84.8, "min": 82.0, "max": 91.5},
+                "status": "ok",
+            },
+            {
+                "name": "yolo11n_od_192 (model_zoo)",
+                "task": "object_detection",
+                "model_size_bytes": 2050048,
+                "arena_used_bytes": 1048576,
+                "latency_ms": {"avg": 85.1, "min": 82.3, "max": 91.9},
+                "status": "ok",
+            },
+        ]
+    }
+
+    rows = build_rows(
+        payload,
+        manifest_tasks={"yolo11n_od_192": "object_detection"},
+        vela_infos={
+            "yolo11n_od_192": {"npu_utilization_pct": 100.0, "cpu_fallback_ops": []},
+            "yolo11n_ref": {"npu_utilization_pct": 98.0, "cpu_fallback_ops": ["Passthrough"]},
+        },
+        conversion_results=[
+            {
+                "name": "yolo11n_od_192",
+                "status": "exported_from_source",
+                "model_zoo_ref": "yolo11n_ref.tflite",
+            }
+        ],
+    )
+
+    names = [row["Model"] for row in rows]
+    assert "yolo11n_od_192 (ours)" in names
+    assert "yolo11n_od_192 (model_zoo)" in names
+    assert "yolo11n_od_192 (diff)" in names
+    diff = next(row for row in rows if row["Model"] == "yolo11n_od_192 (diff)")
+    assert diff["Task"] == "object_detection"
+    assert diff["Size (KB)"] == -2.0
+    assert diff["Arena (KB)"] == 0.0
+    assert diff["Avg (ms)"] == -0.3
+    assert diff["NPU%"] == 2.0
+    assert diff["CPU Fallback"] == "ours:- | model_zoo:Passthrough"
+    assert diff["Status"] == "comparison"
+
+
+def test_build_rows_appends_yolo_size_trend_row() -> None:
+    payload = {
+        "models": [
+            {
+                "name": "yolo11n_od_192",
+                "task": "object_detection",
+                "model_size_bytes": 1024 * 1000,
+                "arena_used_bytes": 1024 * 900,
+                "latency_ms": {"avg": 80.0, "min": 79.0, "max": 81.0},
+                "status": "ok",
+            },
+            {
+                "name": "yolo11s_od_192",
+                "task": "object_detection",
+                "model_size_bytes": 1024 * 2000,
+                "arena_used_bytes": 1024 * 1100,
+                "latency_ms": {"avg": 130.0, "min": 128.0, "max": 134.0},
+                "status": "ok",
+            },
+        ]
+    }
+
+    rows = build_rows(
+        payload,
+        manifest_tasks={
+            "yolo11n_od_192": "object_detection",
+            "yolo11s_od_192": "object_detection",
+        },
+        vela_infos={
+            "yolo11n_od_192": {"npu_utilization_pct": 98.0, "cpu_fallback_ops": []},
+            "yolo11s_od_192": {"npu_utilization_pct": 96.0, "cpu_fallback_ops": ["Passthrough"]},
+        },
+    )
+
+    trend = next(row for row in rows if row["Model"] == "yolo11_od_192 (size trend)")
+    assert trend["Status"] == "trend"
+    assert trend["Size (KB)"] == "n:1000.0, s:2000.0"
+    assert trend["Avg (ms)"] == "n:80.0, s:130.0"
+    assert trend["NPU%"] == "n:98.0, s:96.0"
+
+
+def test_render_markdown_includes_model_zoo_diff_row() -> None:
+    markdown = render_markdown(
+        [
+            {
+                "Model": "yolo11n_od_192 (diff)",
+                "Task": "object_detection",
+                "Size (KB)": -2.0,
+                "Arena (KB)": 0.0,
+                "Avg (ms)": -0.3,
+                "Min (ms)": -0.3,
+                "Max (ms)": -0.4,
+                "NPU%": 2.0,
+                "CPU Fallback": "ours:- | model_zoo:Passthrough",
+                "Status": "comparison",
+                "Reason": "ours - model_zoo",
+            }
+        ],
+        "Himax HX6538 Model Benchmark Report",
+    )
+
+    assert "yolo11n_od_192 (diff)" in markdown
+    assert "ours:- \\| model_zoo:Passthrough" in markdown
+    assert " | comparison | ours - model_zoo |" in markdown
+
+
+def test_render_markdown_escapes_pipe_characters_inside_cells() -> None:
+    markdown = render_markdown(
+        [
+            {
+                "Model": "mobilenetv2_cls_224 (diff)",
+                "Task": "classification",
+                "Size (KB)": 1652.9,
+                "Arena (KB)": 1098.1,
+                "Avg (ms)": 13.9,
+                "Min (ms)": 13.9,
+                "Max (ms)": 13.9,
+                "NPU%": "-",
+                "CPU Fallback": "ours:Passthrough | model_zoo:-",
+                "Status": "comparison",
+                "Reason": "ours - model_zoo",
+            }
+        ],
+        "Himax HX6538 Model Benchmark Report",
+    )
+
+    assert "ours:Passthrough \\| model_zoo:-" in markdown
+
+
+def test_build_rows_treats_degenerate_recompiled_model_zoo_vela_info_as_unavailable() -> None:
+    payload = {
+        "models": [
+            {
+                "name": "mobilenetv2_cls_224 (model_zoo)",
+                "task": "classification",
+                "model_size_bytes": 1704672,
+                "arena_used_bytes": 385748,
+                "latency_ms": {"avg": 103.937, "min": 103.937, "max": 103.938},
+                "status": "ok",
+            }
+        ]
+    }
+
+    rows = build_rows(
+        payload,
+        manifest_tasks={"mobilenetv2_cls_224": "classification"},
+        vela_infos={
+            "qat_pruning_model_vela": {
+                "cpu_ops": 1,
+                "npu_ops": 0,
+                "npu_utilization_pct": 0.0,
+                "cpu_fallback_ops": ["Passthrough"],
+                "input_model": "/repo/model_zoo/tflm_mb_cls/qat_pruning_model_vela.tflite",
+            }
+        },
+        conversion_results=[
+            {
+                "name": "mobilenetv2_cls_224",
+                "status": "exported_from_source",
+                "model_zoo_ref": "qat_pruning_model_vela.tflite",
+            }
+        ],
+    )
+
+    row = rows[0]
+    assert row["Model"] == "mobilenetv2_cls_224 (model_zoo)"
+    assert row["NPU%"] == "-"
+    assert row["CPU Fallback"] == "-"
 
 
 def test_write_report_marks_conversion_failures_with_reason(tmp_path) -> None:
