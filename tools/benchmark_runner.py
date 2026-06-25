@@ -99,6 +99,10 @@ def resolve_model_artifacts(
 
 def _resolve_artifact_path(repo_root: Path, spec: ModelSpec, *, artifact_root: Path) -> Path:
     artifact_dir = artifact_root / spec.name
+    optimized_path = artifact_dir / f"{spec.name}_vela_optimized.tflite"
+    if optimized_path.exists():
+        return optimized_path
+
     artifact_matches = sorted(artifact_dir.glob("*_vela.tflite"))
     if len(artifact_matches) == 1:
         return artifact_matches[0]
@@ -498,6 +502,7 @@ def main() -> int:
             manifest_path=args.manifest,
             output_prefix=args.report_prefix,
             vela_dir=vela_dir,
+            conversion_summary_path=conversion_summary_path,
         )
         print(markdown_path)
         print(csv_path)

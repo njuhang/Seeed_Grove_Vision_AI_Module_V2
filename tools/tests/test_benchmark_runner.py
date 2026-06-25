@@ -3,7 +3,7 @@ from pathlib import Path
 
 from unittest.mock import patch
 
-from tools.benchmark_runner import capture_board_result, compute_batches, parse_args, parse_tiers, prepare_artifacts, resolve_model_artifacts, run_board_benchmark, run_execution_plan, write_execution_plan
+from tools.benchmark_runner import capture_board_result, compute_batches, main, parse_args, parse_tiers, prepare_artifacts, resolve_model_artifacts, run_board_benchmark, run_execution_plan, write_execution_plan
 
 
 def test_compute_batches() -> None:
@@ -68,6 +68,38 @@ models:
     assert len(resolved) == 1
     assert resolved[0].model_path == artifact_path
     assert resolved[0].model_size_bytes == len(b"generated")
+
+
+def test_resolve_model_artifacts_prefers_optimized_artifact_when_baseline_is_preserved(tmp_path: Path) -> None:
+    manifest = tmp_path / "models.yaml"
+    manifest.write_text(
+        """
+models:
+  - name: retinaface_mnet_face_160
+    task: face_detection
+    source:
+      type: retinaface
+      repo_path: artifacts_debug/vendor/retinaface
+      weights: weights/mobilenet0.25_Final.pth
+    input_shape: [1, 3, 160, 160]
+    calibration_dataset: coco_128
+    tier: 1
+    flash_address: 0x02400000
+        """.strip(),
+        encoding="utf-8",
+    )
+    artifact_dir = tmp_path / "artifacts" / "retinaface_mnet_face_160"
+    artifact_dir.mkdir(parents=True)
+    baseline = artifact_dir / "retinaface_mnet_face_160_vela.tflite"
+    optimized = artifact_dir / "retinaface_mnet_face_160_vela_optimized.tflite"
+    baseline.write_bytes(b"baseline")
+    optimized.write_bytes(b"optimized")
+
+    resolved = resolve_model_artifacts(tmp_path, manifest)
+
+    assert len(resolved) == 1
+    assert resolved[0].model_path == optimized
+    assert resolved[0].model_size_bytes == len(b"optimized")
 
 
 def test_resolve_model_artifacts_falls_back_to_model_zoo_refs(tmp_path: Path) -> None:
@@ -716,6 +748,37 @@ def test_parse_args_supports_tier_selection(monkeypatch) -> None:
     args = parse_args()
 
     assert parse_tiers(args.tiers) == {1, 2}
+
+
+def test_main_passes_conversion_summary_to_report(monkeypatch, tmp_path: Path) -> None:
+    output_dir = tmp_path / "artifacts"
+    output_dir.mkdir()
+    summary_path = output_dir / "conversion_summary.json"
+    summary_path.write_text(json.dumps({"results": []}), encoding="utf-8")
+    board_result = tmp_path / "board.json"
+    board_result.write_text(json.dumps({"models": []}), encoding="utf-8")
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "benchmark_runner.py",
+            "--output-dir",
+            str(output_dir),
+            "--board-result",
+            str(board_result),
+            "--report-prefix",
+            str(output_dir / "report"),
+        ],
+    )
+
+    with (
+        patch("tools.benchmark_runner.write_execution_plan", return_value=output_dir / "benchmark_plan.json"),
+        patch("tools.benchmark_runner.load_payload", return_value={"models": []}),
+        patch("tools.benchmark_runner.write_report", return_value=(output_dir / "report.md", output_dir / "report.csv")) as report_mock,
+    ):
+        assert main() == 0
+
+    assert report_mock.call_args.kwargs["conversion_summary_path"] == summary_path
 
 
 def test_capture_board_result_writes_latest_payload(tmp_path: Path) -> None:
